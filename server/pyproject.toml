@@ -1,6 +1,6 @@
 [project]
 name = "babel-reader-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "Babel Reader 的本地翻译服务：通过 pdf2zh_next / BabelDOC 翻译 PDF"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

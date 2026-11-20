@@ -1,6 +1,6 @@
 {
   "name": "babel-reader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "在 Obsidian 里生成保留排版的 PDF 译文，并在原文 / 译文 / 对照之间切换",
   "main": "main.js",
   "private": true,
