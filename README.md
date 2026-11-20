@@ -1,18 +1,17 @@
 # Babel Reader
 
-> 在 Obsidian 里一键生成保留排版的 PDF 译文，并在「原文 / 译文 / 对照」之间切换。
+> 在 Obsidian 里一键生成保留排版的 PDF 译文，并在「原文 / 译文 / 对照」之间切换，切换后停在同一页。
 
-**状态：开发中，v0.1 尚未发布。** 下文的功能以「路线图」一节为准。
+**状态：v0.1 功能已完成，尚未发布 Release。** 目前需要从源码构建插件（见「安装」），只在 Windows 桌面端测试过。
 
 ## 它做什么
 
-- 对仓库里的任意 PDF 一键翻译，输出两份 PDF：
+- 对仓库里的 PDF 一键翻译，输出两份 PDF：
   - **译文**：保留原排版、公式和图表，只把文字换成目标语言
   - **对照**：原文和译文左右并排在同一页
-- 在 PDF 视图顶部一键切换 **原文 / 译文 / 对照**，切换后停在同一页
-- 原文是唯一正本：笔记里的链接、反链、高亮都指向原文，译文文件不进入链接体系
-- 用一篇笔记（或现成的 CSV）维护术语表，翻译时自动带上，保证领域术语前后一致
-- 翻译引擎是 [BabelDOC](https://github.com/funstory-ai/BabelDOC)，通过 [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next)（pdf2zh_next）调用
+- 在 PDF 视图顶部切换 **原文 / 译文 / 对照**，切换后停在同一页（三份文件的第 N 页始终是同一内容）
+- 原文是唯一正本：插件从不修改原文，笔记里的链接、反链、高亮都指向原文；译文只写进单独的译文目录
+- 翻译引擎是 [BabelDOC](https://github.com/funstory-ai/BabelDOC)，通过 [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next)（pdf2zh_next）调用，大模型用任意 OpenAI 兼容接口（如 DeepSeek）
 
 ## 工作方式
 
@@ -24,38 +23,58 @@ Obsidian 插件 ──HTTP──▶ Babel Reader Server ──▶ pdf2zh_next / 
       └──────────── 译文 PDF（mono / dual）◀────────────────┘
 ```
 
-- 插件把 PDF 上传给服务、轮询进度，完成后把译文写回仓库
-- 服务默认跑在本机；设计上也可以跑在局域网里的另一台机器上（v0.3），届时手机和平板也能发起翻译
-- 大模型的 API key 只保存在服务端配置里，不进入 Obsidian 仓库，也不会随仓库同步
+- 插件把 PDF 上传给服务、每秒查询一次进度，完成后把译文写回仓库
+- 服务默认只监听本机 `127.0.0.1`
+- 大模型的 API key 只保存在服务端的 `config.toml` 里，不进入 Obsidian 仓库，也不会随仓库同步
 
 ## 环境要求
 
-- Obsidian 桌面端或移动端：阅读和切换在所有平台可用；发起翻译需要能连到服务
-- 服务端：Python 3.12、[uv](https://docs.astral.sh/uv/)
-- 一个 OpenAI 兼容的大模型 API（如 DeepSeek），或本地运行的 OpenAI 兼容服务
+- **Obsidian** 1.6 或更高版本（桌面端）
+- **翻译服务**：[uv](https://docs.astral.sh/uv/)（会自动下载所需的 Python 3.12，不用单独装 Python）；首次运行需要下载约 300 MB 的版面模型和字体
+- **构建插件**（在发布 Release 之前需要）：[Node.js](https://nodejs.org/) 22 或更高版本、[Git](https://git-scm.com/)
+- **一个 OpenAI 兼容的大模型 API**，如 DeepSeek，或本地运行的 OpenAI 兼容服务
+
+安装 uv：
+
+```powershell
+# Windows
+winget install astral-sh.uv
+```
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
 ## 安装
 
-### 1. 翻译服务
+### 1. 下载源码
 
 ```bash
 git clone https://github.com/StarHtimE/babel-reader.git
-cd babel-reader/server
-uv sync
-cp config.example.toml config.toml   # 填入 API key、接口地址和模型
-uv run babel-reader-server warmup    # 首次运行：下载并校验版面模型和字体
+cd babel-reader
+```
+
+### 2. 启动翻译服务
+
+```bash
+cd server
+uv sync                              # 安装依赖（首次较慢）
+cp config.example.toml config.toml   # 然后编辑 config.toml，填入 API key、接口地址和模型
+uv run babel-reader-server warmup    # 只需一次：下载并校验版面模型和字体
 uv run babel-reader-server serve     # 默认监听 127.0.0.1:8891
 ```
 
-`warmup` 只需要跑一次。跳过的话，第一次翻译会先下载模型，看起来像卡住了。
+- `warmup` 只需要跑一次。跳过的话，第一次翻译会先下载模型，看起来像卡住了
+- 翻译时服务要一直开着。关掉终端窗口，服务就停了
 
-`config.toml` 示例：
+`config.toml` 最少需要一个 profile：
 
 ```toml
 [server]
 host = "127.0.0.1"
 port = 8891
-token = ""            # 开放到局域网时务必设置
+token = ""            # 访问令牌；只在本机使用时可留空
 
 [[profiles]]
 name = "deepseek"
@@ -63,63 +82,137 @@ base_url = "https://api.deepseek.com"
 api_key = "sk-..."
 model = "deepseek-chat"
 qps = 4
-extra_body = { thinking = { type = "disabled" } }   # 可选，见下
+extra_body = { thinking = { type = "disabled" } }   # 关闭思考，见下
 ```
 
-- `extra_body`：原样合并进每次请求体的额外字段。默认开启思考的模型（如 DeepSeek）每段都会先推理，翻译会慢很多，用上面这行关掉；其他服务商关闭思考的字段名不同，按其文档填写。修改后已翻译过的段落不会命中翻译缓存
-- `temperature`、`timeout`：可选，填了才会发送
+**关于思考模式：** 默认开启思考的模型（如 DeepSeek）会先推理每一段再翻译，速度会慢很多倍。实测一篇 17 页的论文，开着思考约 23 分钟，用上面的 `extra_body` 关掉后约 2 分钟。其他服务商关闭思考的字段名不同，请按其文档填写。完整的配置项见下文「服务端配置参考」。
 
-### 2. 插件
+### 3. 构建并安装插件
 
-尚未上架社区目录。手动安装：从 Releases 下载 `main.js`、`manifest.json`、`styles.css`，放进 `<仓库>/.obsidian/plugins/babel-reader/`，重启 Obsidian 后在「第三方插件」中启用。
+在项目根目录（`babel-reader/`）：
 
-插件不会自动安装或更新翻译服务及其依赖，服务需要按上一步自行安装。
+```bash
+npm install
+npm run build
+```
 
-## 配置
+构建会生成 `main.js`。在你的仓库里新建文件夹 `<仓库>/.obsidian/plugins/babel-reader/`（文件夹名必须是 `babel-reader`），把 `main.js`、`manifest.json`、`styles.css` 这三个文件复制进去。然后在 Obsidian 的「设置 → 第三方插件」里关闭「安全模式」（新版本叫「受限模式」），刷新插件列表，启用 **Babel Reader**。
+
+> 发布 Release 后，可以直接从 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载这三个文件，不用自己构建。
+
+插件不会自动安装或更新翻译服务及其依赖，服务需要按第 2 步自行安装。
+
+### 4. 连接服务
+
+打开「设置 → Babel Reader」，确认服务地址是 `http://127.0.0.1:8891`，点「测试连接」。成功时会显示服务和引擎的版本号。再点「翻译配置」旁边的刷新按钮，选择 `config.toml` 里的 profile（留空则用第一个）。
+
+## 使用
+
+### 翻译
+
+打开一个 PDF，点视图顶部的 **翻译** 按钮（语言图标），或运行命令「翻译当前 PDF」。
+
+- 状态栏显示进度和当前阶段；**点击状态栏**（或运行命令「取消翻译」）可以取消
+- 同一时间只能翻译一篇
+- 完成后译文写入译文目录（默认 `_translations/`），原文不会被改动
+
+### 切换
+
+已有译文的 PDF，视图顶部会出现四个按钮：
+
+| 按钮 | 作用 |
+|---|---|
+| 文件图标 | 切换到原文 |
+| 语言图标 | 切换到译文 |
+| 书本图标 | 切换到对照（左右并排） |
+| 刷新图标 | 重新翻译当前 PDF（只在原文上出现） |
+
+切换时停在当前页。直接打开译文文件，也会显示这组切换按钮。三条切换命令「切换到原文 / 译文 / 对照」可以在「设置 → 快捷键」里绑定快捷键。
+
+### 重新翻译与删除
+
+- **重新翻译** 会覆盖同一目录里的译文。参数相同时会复用服务端的翻译缓存，所以很快
+- **删除译文**：直接删除 `_translations/` 下对应的文件夹即可，按钮会立即恢复成「翻译」
+
+## 设置
 
 设置 → Babel Reader：
 
 | 选项 | 说明 | 默认值 |
 |---|---|---|
 | 服务地址 | 翻译服务的 URL，旁边有「测试连接」按钮 | `http://127.0.0.1:8891` |
-| 访问令牌 | 与服务端 `token` 一致；仅本机使用时可留空 | 空 |
-| 源语言 / 目标语言 | | `en` → `zh` |
-| 翻译配置 | 从服务端读取，对应 `config.toml` 里的 profile | 第一个 |
-| 译文目录 | 译文和清单的存放位置 | `_translations` |
+| 访问令牌 | 与服务端 `token` 一致；服务端没设令牌时留空 | 空 |
+| 翻译配置 | 对应 `config.toml` 里的 profile，可从服务端读取 | 服务端第一个 |
+| 源语言 / 目标语言 | 语言代码 | `en` → `zh` |
 | 生成对照版 | 关闭则只生成译文 | 开 |
-| 术语表 | 一篇笔记或一个 CSV 文件，见下文 | 空 |
-
-## 使用
-
-- **翻译**：打开 PDF，点视图顶部的「翻译」按钮，或运行命令「翻译当前 PDF」。进度显示在状态栏，可随时取消
-- **切换**：已有译文的 PDF，视图顶部会出现「原文 / 译文 / 对照」按钮；也可以给三条切换命令绑快捷键
-- **部分翻译**：命令「翻译指定页」只翻译选定页（比如跳过参考文献和附录）；未翻译的页保留原文，页码不变
-- **重新翻译**：默认复用翻译缓存；「强制重新翻译」会忽略缓存
-
-### 术语表
-
-在设置里指定一篇笔记，内容是一个两列表格：
-
-| source | target |
-|---|---|
-| speckle | 相干斑 |
-| backscatter | 后向散射 |
-
-也可以直接指定仓库里现成的 CSV 文件（`source,target` 两列）。每次翻译时插件把术语表交给 BabelDOC；翻译中自动抽取到的新术语可以写回笔记，供你审核后保留。
+| 对照版译文在左 | 只影响对照版左右顺序，不影响页码 | 关 |
+| 译文目录 | 译文和清单的存放位置（仓库内路径），修改后会重新扫描 | `_translations` |
 
 ## 文件布局
 
 ```
 _translations/
-└── <原文文件名>-<短 ID>/
+└── <原文文件名>-<6 位短 ID>/
     ├── <原文文件名>.zh.mono.pdf   # 译文
     ├── <原文文件名>.zh.dual.pdf   # 对照
     └── manifest.json             # 原文路径、哈希、翻译参数、引擎版本
 ```
 
-- 原文被修改后（哈希变化），插件会把译文标记为过期，不会自动重译
-- 原文重命名或移动时，清单跟着更新；原文删除时，插件会询问是否一并删除译文
-- 每篇论文会多出两份 PDF。如果仓库跨设备同步，可以只生成译文，或者在同步工具里排除 `_translations/`
+每篇论文会多出两份 PDF。如果仓库跨设备同步，可以关闭「生成对照版」，或者在同步工具里排除 `_translations/`。
+
+## 服务端配置参考
+
+`server/config.toml`（已在 `.gitignore` 中，不会被提交）：
+
+| 配置项 | 说明 | 默认值 |
+|---|---|---|
+| `[server] host` | 监听地址 | `127.0.0.1` |
+| `[server] port` | 端口 | `8891` |
+| `[server] token` | 访问令牌；设置后插件必须填写相同的令牌 | 空 |
+| `[server] work_dir` | 任务临时文件的位置 | 系统临时目录 |
+| `[server] result_ttl_seconds` | 已完成任务的结果在服务端保留多久 | `3600` |
+| `[server] max_upload_mb` | 上传 PDF 的大小上限 | `200` |
+| `[[profiles]] name` | 名称，插件按它选择 | 必填 |
+| `[[profiles]] base_url` / `api_key` / `model` | OpenAI 兼容接口的地址、密钥、模型 | 必填 |
+| `[[profiles]] qps` | 每秒请求数上限 | `4` |
+| `[[profiles]] temperature` / `timeout` | 可选，填了才会发送 | 不发送 |
+| `[[profiles]] extra_body` | 原样合并进每次请求体的额外字段，如关闭思考 | 不发送 |
+
+修改 `extra_body`、`model` 等参数后，之前翻译过的段落不会命中翻译缓存，会重新调用大模型。
+
+命令行：
+
+```bash
+uv run babel-reader-server serve [--config 路径] [--host 地址] [--port 端口]
+uv run babel-reader-server --log-file server.log serve   # 同时把日志写入文件（UTF-8）
+uv run babel-reader-server warmup
+```
+
+## 常见问题
+
+- **「测试连接」失败**：确认翻译服务正在运行、地址和端口与 `config.toml` 一致；服务端设置了 `token` 时，插件里要填相同的访问令牌
+- **翻译很慢**：多半是模型开着思考模式，见上文 `extra_body`；也可以适当调高 `qps`（注意服务商的限流）
+- **第一次翻译好像卡住了**：没有运行 `warmup`，服务正在下载版面模型，等它下载完即可
+- **翻译失败**：弹出的提示里有服务端返回的原因（如 API key 无效、额度不足）；更详细的信息看服务端终端输出或 `--log-file` 指定的日志
+
+## 更新
+
+在项目根目录：
+
+```bash
+git pull
+npm install
+npm run build      # 重新构建插件，再把三个文件复制到插件文件夹，并在 Obsidian 里重新启用插件
+cd server
+uv sync            # 更新服务端依赖，然后重启服务
+```
+
+## 已知限制（v0.1）
+
+- 原文被重命名或移动后，插件找不到它和译文的关联，需要重新翻译（重命名跟踪在 v0.2）
+- 原文内容变化后不会提示译文过期（v0.2）
+- 还不支持术语表、只翻译指定页、批量翻译（v0.2）
+- 只在 Windows 桌面端测试过；移动端可以阅读已同步的译文，但手机连不到电脑上的本地服务，无法发起翻译（局域网服务在 v0.3）
 
 ## 隐私与网络
 
@@ -129,14 +222,14 @@ _translations/
 
 ## 路线图
 
-- [ ] v0.1：单篇翻译、进度与取消、三态切换（保持页码）、清单
-- [ ] v0.2：右键批量翻译与队列、过期检测、重命名/删除跟踪、术语表
+- [x] v0.1：单篇翻译、进度与取消、三态切换（保持页码）、清单
+- [ ] v0.2：右键批量翻译与队列、过期检测、重命名/删除跟踪、术语表、指定页翻译
 - [ ] v0.3：原文与译文双栏同步滚动、移动端裁剪阅读、局域网远程服务
 
 ## 许可证
 
-- 插件（项目根目录）：MIT
-- 翻译服务（`server/`）：AGPL-3.0，因为它依赖同为 AGPL-3.0 的 BabelDOC 和 PDFMathTranslate-next
+- 插件（项目根目录）：MIT，见 [LICENSE](LICENSE)
+- 翻译服务（`server/`）：AGPL-3.0，见 [server/LICENSE](server/LICENSE)，因为它依赖同为 AGPL-3.0 的 BabelDOC 和 PDFMathTranslate-next
 
 ## 致谢
 
