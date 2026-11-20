@@ -2,7 +2,7 @@
 
 > 在 Obsidian 里一键生成保留排版的 PDF 译文，并在「原文 / 译文 / 对照」之间切换，切换后停在同一页。
 
-**状态：v0.1 功能已完成，尚未发布 Release。** 目前需要从源码构建插件（见「安装」），只在 Windows 桌面端测试过。
+**状态：v0.1.0**，可从 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载。尚未上架 Obsidian 社区插件目录，需要手动安装（见「安装」）。只在 Windows 桌面端测试过。
 
 ## 它做什么
 
@@ -32,7 +32,7 @@ Obsidian 插件 ──HTTP──▶ Babel Reader Server ──▶ pdf2zh_next / 
 
 - **Obsidian** 1.6 或更高版本（桌面端）
 - **翻译服务**：[uv](https://docs.astral.sh/uv/)（会自动下载所需的 Python 3.12，不用单独装 Python）；首次运行需要下载约 300 MB 的版面模型和字体
-- **构建插件**（在发布 Release 之前需要）：[Node.js](https://nodejs.org/) 22 或更高版本、[Git](https://git-scm.com/)
+- **[Git](https://git-scm.com/)**：用来下载和更新服务端源码（也可以直接下载源码压缩包）
 - **一个 OpenAI 兼容的大模型 API**，如 DeepSeek，或本地运行的 OpenAI 兼容服务
 
 安装 uv：
@@ -51,10 +51,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### 1. 下载源码
 
+翻译服务没有单独的安装包，需要源码里的 `server/` 目录：
+
 ```bash
 git clone https://github.com/StarHtimE/babel-reader.git
 cd babel-reader
 ```
+
+也可以在 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载对应版本的「Source code (zip)」解压。用 Git 的好处是以后 `git pull` 就能更新。
 
 ### 2. 安装翻译服务
 
@@ -88,18 +92,21 @@ extra_body = { thinking = { type = "disabled" } }   # 关闭思考，见下
 
 **关于思考模式：** 默认开启思考的模型（如 DeepSeek）会先推理每一段再翻译，速度会慢很多倍。实测一篇 17 页的论文，开着思考约 23 分钟，用上面的 `extra_body` 关掉后约 2 分钟。其他服务商关闭思考的字段名不同，请按其文档填写。完整的配置项见下文「服务端配置参考」。
 
-### 3. 构建并安装插件
+### 3. 安装插件
 
-在项目根目录（`babel-reader/`）：
+任选一种：
 
-```bash
-npm install
-npm run build
-```
+**手动安装**
 
-构建会生成 `main.js`。在你的仓库里新建文件夹 `<仓库>/.obsidian/plugins/babel-reader/`（文件夹名必须是 `babel-reader`），把 `main.js`、`manifest.json`、`styles.css` 这三个文件复制进去。然后在 Obsidian 的「设置 → 第三方插件」里关闭「安全模式」（新版本叫「受限模式」），刷新插件列表，启用 **Babel Reader**。
+1. 从 [最新 Release](https://github.com/StarHtimE/babel-reader/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css` 三个文件
+2. 在你的仓库里新建文件夹 `<仓库>/.obsidian/plugins/babel-reader/`（文件夹名必须是 `babel-reader`），把三个文件放进去
+3. 在 Obsidian 的「设置 → 第三方插件」里关闭「安全模式」（新版本叫「受限模式」），刷新插件列表，启用 **Babel Reader**
 
-> 发布 Release 后，可以直接从 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载这三个文件，不用自己构建。
+**用 BRAT 安装**（以后可以自动更新）
+
+装好社区插件 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 后，运行命令「BRAT: Add a beta plugin for testing」，填入 `StarHtimE/babel-reader`，再在「第三方插件」里启用 **Babel Reader**。
+
+**从源码构建**（需要 [Node.js](https://nodejs.org/) 22 或更高版本）：在项目根目录运行 `npm install` 和 `npm run build`，生成的 `main.js` 和 `manifest.json`、`styles.css` 一起按手动安装的第 2、3 步放进插件文件夹。
 
 插件不会安装或更新翻译服务及其依赖，服务需要按第 2 步自行安装。
 
@@ -207,17 +214,18 @@ uv run babel-reader-server warmup
 
 ## 更新
 
-在项目根目录：
+插件和服务端分开更新，最好保持同一版本：
+
+- **插件**：从 [最新 Release](https://github.com/StarHtimE/babel-reader/releases/latest) 下载三个文件覆盖插件文件夹里的旧文件，然后在 Obsidian 里重新启用插件；用 BRAT 安装的会自动更新
+- **服务端**：先关闭 Obsidian（正在运行的服务会占用虚拟环境里的文件），再在项目根目录运行：
 
 ```bash
 git pull
-npm install
-npm run build      # 重新构建插件，再把三个文件复制到插件文件夹，并在 Obsidian 里重新启用插件
 cd server
-uv sync            # 更新服务端依赖，然后重启服务
+uv sync
 ```
 
-自动启动的服务会一直运行到关闭 Obsidian；更新服务端后重启 Obsidian 即可用上新版本。`uv sync` 前最好先关闭 Obsidian，正在运行的服务会占用虚拟环境里的文件。
+自动启动的服务会一直运行到关闭 Obsidian，所以更新服务端后重新打开 Obsidian 即可用上新版本。
 
 ## 已知限制（v0.1）
 

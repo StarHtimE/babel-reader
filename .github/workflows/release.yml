@@ -1,0 +1,54 @@
+# 推送版本标签（如 0.1.0，不带 v，必须与 manifest.json 的 version 一致）时
+# 构建插件并创建「草稿」Release，附上 main.js / manifest.json / styles.css。
+# 草稿不会公开，需要在 GitHub 网页上检查后手动发布。
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: 检查标签与版本号一致
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          manifest_version=$(node -p "require('./manifest.json').version")
+          package_version=$(node -p "require('./package.json').version")
+          min_app=$(node -p "require('./manifest.json').minAppVersion")
+          listed=$(node -p "require('./versions.json')['${tag}'] ?? ''")
+          if [ "$tag" != "$manifest_version" ] || [ "$tag" != "$package_version" ]; then
+            echo "标签 $tag 与 manifest.json ($manifest_version) 或 package.json ($package_version) 的版本不一致"
+            exit 1
+          fi
+          if [ "$listed" != "$min_app" ]; then
+            echo "versions.json 里 $tag 应为 $min_app，实际为 '$listed'"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+      - name: 创建草稿 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --draft \
+            --generate-notes \
+            main.js manifest.json styles.css

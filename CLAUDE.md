@@ -55,6 +55,8 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 
 改完代码，先跑通相关部分的 build / lint / test，再报告完成。
 
+发版：`package.json`、`manifest.json` 的 `version` 一起改，`versions.json` 加一行 `"<版本>": "<minAppVersion>"`；提交后推送同名标签（不带 `v`，如 `0.1.0`），`.github/workflows/release.yml` 会构建并创建草稿 Release，由用户在 GitHub 网页上检查后发布。
+
 ## 开发环境
 
 - 在原生 Windows 下开发，不用 WSL。Node、uv、Python 都用 Windows 版；Claude Code 的命令经 Git Bash 或 PowerShell 执行。
