@@ -3,10 +3,12 @@ import type { ServerClient } from "./api/client";
 import { errorMessage } from "./core/errors";
 import { DEFAULT_SETTINGS, type BabelReaderSettings } from "./core/settings-model";
 import { normalizeServerUrl } from "./core/url";
+import type { ServerLauncher } from "./launcher/server-launcher";
 
 export interface SettingsHost extends Plugin {
 	settings: BabelReaderSettings;
 	client: ServerClient;
+	launcher: ServerLauncher;
 	saveSettings(): Promise<void>;
 	/** 译文目录改了之后重建索引 */
 	onTranslationsDirChanged(): Promise<void>;
@@ -59,6 +61,41 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 					await this.host.saveSettings();
 				});
 			});
+
+		// 自动启动要运行本机程序，只有桌面端有
+		if (this.host.launcher.supported) {
+			new Setting(containerEl)
+				.setName("自动启动服务")
+				.setDesc(
+					"点击翻译时如果连不上本机的翻译服务，就在后台启动它。只对本机地址生效；由插件启动的服务会在关闭 Obsidian 时一并结束。",
+				)
+				.addToggle((t) =>
+					t.setValue(s.autoStartServer).onChange(async (v) => {
+						s.autoStartServer = v;
+						await this.host.saveSettings();
+					}),
+				);
+
+			new Setting(containerEl)
+				.setName("服务目录")
+				.setDesc(
+					"Babel Reader 源码里的 server 文件夹的完整路径。需要已在其中运行过 uv sync 并创建好 config.toml；服务日志写在该目录的 server.log。",
+				)
+				.addText((t) =>
+					t
+						.setPlaceholder("D:\\babel-reader\\server")
+						.setValue(s.serverDir)
+						.onChange(async (v) => {
+							s.serverDir = v.trim();
+							await this.host.saveSettings();
+						}),
+				)
+				.addButton((b) =>
+					b.setButtonText("检查").onClick(() => {
+						this.checkServerDir();
+					}),
+				);
+		}
 
 		new Setting(containerEl)
 			.setName("翻译配置")
@@ -172,6 +209,19 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 			new Notice(`连接失败：${errorMessage(err)}`, 8000);
 		} finally {
 			button.disabled = false;
+		}
+	}
+
+	private checkServerDir(): void {
+		try {
+			const problems = this.host.launcher.checkServerDir(this.host.settings.serverDir);
+			if (problems.length === 0) {
+				new Notice("服务目录没有问题");
+			} else {
+				new Notice(problems.join("\n"), 10000);
+			}
+		} catch (err) {
+			new Notice(`检查失败：${errorMessage(err)}`, 8000);
 		}
 	}
 

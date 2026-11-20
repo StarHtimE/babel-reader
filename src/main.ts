@@ -3,6 +3,7 @@ import { ServerClient } from "./api/client";
 import { mergeSettings, type BabelReaderSettings } from "./core/settings-model";
 import type { ViewMode } from "./core/types";
 import { TranslationJobs } from "./jobs/translation-jobs";
+import { ServerLauncher } from "./launcher/server-launcher";
 import { BabelReaderSettingTab } from "./settings";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
@@ -11,6 +12,7 @@ import { ModeSwitcher } from "./view/mode-switcher";
 export default class BabelReaderPlugin extends Plugin {
 	settings!: BabelReaderSettings;
 	client!: ServerClient;
+	launcher!: ServerLauncher;
 	private store!: TranslationStore;
 	private jobs!: TranslationJobs;
 	private switcher!: ModeSwitcher;
@@ -27,8 +29,20 @@ export default class BabelReaderPlugin extends Plugin {
 			() => this.settings.langOut,
 		);
 
+		// 插件自己启动的服务：卸载插件或退出 Obsidian 时结束（onunload 在退出时不一定会被调用）
+		this.launcher = new ServerLauncher(this.client);
+		this.register(() => this.launcher.stop());
+		this.registerEvent(this.app.workspace.on("quit", () => this.launcher.stop()));
+
 		const statusEl = this.addStatusBarItem();
-		this.jobs = new TranslationJobs(this.app, this.client, this.store, () => this.settings, statusEl);
+		this.jobs = new TranslationJobs(
+			this.app,
+			this.client,
+			this.store,
+			this.launcher,
+			() => this.settings,
+			statusEl,
+		);
 		this.registerDomEvent(statusEl, "click", () => void this.jobs.onStatusClick());
 		this.register(() => this.jobs.dispose());
 

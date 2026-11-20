@@ -11,6 +11,10 @@ export interface BabelReaderSettings {
 	translationsDir: string;
 	generateDual: boolean;
 	dualTranslateFirst: boolean;
+	/** 点翻译时连不上本机服务，就自动启动它（仅桌面端） */
+	autoStartServer: boolean;
+	/** 服务目录：本项目的 server 文件夹（仓库外的系统路径） */
+	serverDir: string;
 }
 
 export const DEFAULT_SETTINGS: Readonly<BabelReaderSettings> = {
@@ -22,6 +26,8 @@ export const DEFAULT_SETTINGS: Readonly<BabelReaderSettings> = {
 	translationsDir: "_translations",
 	generateDual: true,
 	dualTranslateFirst: false,
+	autoStartServer: true,
+	serverDir: "",
 };
 
 /** 把 loadData() 读到的任意数据合并成完整设置，类型不对的字段回退默认值 */

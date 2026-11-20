@@ -2,10 +2,12 @@ import { Notice, type App, type TFile } from "obsidian";
 import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import { sha256Hex } from "../core/hash";
+import { isConnectionError, localLaunchTarget } from "../core/launch";
 import { PollCancelledError, pollJob } from "../core/poll";
 import { formatProgress } from "../core/progress";
 import { buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
-import type { JobStatus, OutputKind } from "../core/types";
+import type { HealthInfo, JobStatus, OutputKind } from "../core/types";
+import type { ServerLauncher } from "../launcher/server-launcher";
 import type { TranslationStore } from "../store/translation-store";
 import { confirmDialog } from "../view/confirm-modal";
 
@@ -29,6 +31,7 @@ export class TranslationJobs {
 		private readonly app: App,
 		private readonly client: ServerClient,
 		private readonly store: TranslationStore,
+		private readonly launcher: ServerLauncher,
 		private readonly getSettings: () => BabelReaderSettings,
 		private readonly statusEl: HTMLElement,
 	) {
@@ -64,8 +67,8 @@ export class TranslationJobs {
 
 		try {
 			this.showStatus("连接服务…");
-			const engine = await this.client.health();
-			if (job.cancelled) return;
+			const engine = await this.connect(job, settings);
+			if (!engine || job.cancelled) return;
 
 			this.showStatus("读取原文…");
 			const data = await this.app.vault.readBinary(file);
@@ -123,6 +126,25 @@ export class TranslationJobs {
 			if (this.active === job) this.active = null;
 			this.hideStatus();
 		}
+	}
+
+	/**
+	 * 连接服务；连不上且开启了自动启动时，在本机启动服务再连。
+	 * 被取消时返回 null。
+	 */
+	private async connect(job: ActiveJob, settings: BabelReaderSettings): Promise<HealthInfo | null> {
+		try {
+			return await this.client.health();
+		} catch (err) {
+			if (!isConnectionError(err) || !settings.autoStartServer || !this.launcher.supported) throw err;
+			// 服务地址不是本机时，原样报告连接失败
+			if (localLaunchTarget(settings.serverUrl) === null) throw err;
+		}
+		this.showStatus("启动翻译服务…");
+		return this.launcher.startAndWait(
+			{ serverUrl: settings.serverUrl, serverDir: settings.serverDir },
+			() => job.cancelled,
+		);
 	}
 
 	async cancel(): Promise<void> {

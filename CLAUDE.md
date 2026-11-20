@@ -22,6 +22,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 │   ├── api/            # 与服务通信：requestUrl 封装、轮询
 │   ├── store/          # manifest 读写、原文 ⇄ 译文索引
 │   ├── jobs/           # 任务队列、进度、取消
+│   ├── launcher/       # 桌面端按需启动本机服务（唯一使用 Node 模块的地方）
 │   └── view/           # PDF 视图头部按钮、模式切换、读当前页号
 ├── tests/              # vitest；主要覆盖 src/core
 └── server/             # Python 翻译服务（AGPL-3.0，单独的 LICENSE）
@@ -60,6 +61,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 - 本机路径（项目目录、测试仓库）写在 `CLAUDE.local.md`，该文件不提交。
 - 插件输出目录写在根目录的 `.env`（不提交）：`OBSIDIAN_PLUGIN_DIR=<测试仓库>\.obsidian\plugins\babel-reader`。`esbuild.config.mjs` 在 `.env` 存在时用 Node 内置的 `process.loadEnvFile()` 读取；设置了就把 `main.js`、`manifest.json`、`styles.css` 复制过去，并放一个空的 `.hotreload` 文件，配合测试仓库里的 Hot Reload 插件（pjeby/hot-reload）自动重载；没设置就只构建不复制。
 - 只在测试仓库里调试，**绝不读写用户的主仓库**（主仓库会同步到多台设备）。测试仓库里的 PDF 是测试原文，不得修改或删除。
+- Claude 桌面版是 MSIX 打包应用：在它的终端里运行的程序写 `%APPDATA%` / `%LOCALAPPDATA%` 时会被重定向到 `AppData\Local\Packages\Claude_*\LocalCache\`，Obsidian 和用户自己的终端看不到。因此 `uv python install` 这类安装到 AppData 的操作必须由用户在普通终端里执行，否则 `.venv` 指向的 Python 在 Claude 之外不存在（venv 启动器报 `No Python at`，退出码 103）
 - npm scripts 必须在 PowerShell 和 Git Bash 下都能运行：不写 `cp`、`rm -rf`、`export VAR=...` 这类 shell 语法，文件操作放进 Node 脚本。
 - 原生 Windows 下 Claude Code 没有 Bash 沙箱：命令只作用于项目目录和测试仓库，不改系统设置，不全局安装包，不动其他目录。
 
@@ -79,10 +81,12 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 2. **原文是正本。** 链接、反链、高亮只落在原文；插件永远不修改原文文件；译文只写进译文目录。
 3. **Obsidian 开发者政策。**
    - 插件不得安装或更新自身及其依赖：不在插件里执行 uv / pip / npm，不下载服务端
+   - 允许启动用户**已安装**的服务（`src/launcher/`）：只运行 `<服务目录>/.venv` 里现成的 `babel-reader-server`，不用 `uv run`（它会自动同步依赖）。仅在点翻译且连不上本机地址时启动，不随 Obsidian 启动；只结束自己启动的进程（整棵进程树），在 `onunload` 和 `workspace.on('quit')` 时结束
+   - 运行外部程序、访问仓库外文件都要在 README 的「隐私与网络」里写明
    - 网络访问只限用户配置的服务地址；新增任何网络行为都要同步更新 README 的「隐私与网络」
    - 不加遥测，不混淆代码
 4. **移动端可用。** `manifest.json` 里 `isDesktopOnly: false`，因此：
-   - 不在顶层 import Node / Electron 模块（`fs`、`path`、`child_process`、`electron`）
+   - 不在顶层 import Node / Electron 模块（`fs`、`path`、`child_process`、`electron`）；确需使用时（只有 `src/launcher/`）先判断 `Platform.isDesktopApp`，再在函数内 `window.require`，类型用手写的最小接口，不引入 `@types/node`
    - 网络请求统一用 `requestUrl`（没有 CORS 问题，移动端可用），不用 `fetch` / `EventSource`
    - 哈希用 Web Crypto：`crypto.subtle.digest('SHA-256', buf)`
    - 文件读写用 Vault API（`readBinary` / `createBinary` / `modifyBinary`），不用 Adapter API；用户给的路径一律过 `normalizePath`
@@ -176,6 +180,6 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 
 ## 路线图
 
-- **v0.1**：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码
+- **v0.1**：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译时按需自动启动本机服务（默认开启）
 - **v0.2**：右键批量翻译与队列；过期检测；重命名 / 删除跟踪；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
 - **v0.3**：原文与译文双 pane 同步滚动；移动端裁剪阅读；局域网远程服务（令牌鉴权）
