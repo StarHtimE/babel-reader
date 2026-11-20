@@ -1,3 +1,5 @@
+import type { LlmJobOptions } from "./llm";
+
 /** 服务端任务状态（与 HTTP 接口 v1 一致） */
 export type JobState = "queued" | "running" | "done" | "error" | "cancelled";
 
@@ -15,7 +17,12 @@ export interface HealthInfo {
 	server_version: string;
 	pdf2zh_next_version: string;
 	babeldoc_version: string;
+	/** 服务端支持的可选功能，如 "llm"（接受 options.llm）；旧版服务端为空 */
+	features: string[];
 }
+
+/** 服务端接受插件提交的大模型配置（options.llm） */
+export const FEATURE_LLM_OPTIONS = "llm";
 
 export interface JobStatus {
 	state: JobState;
@@ -30,7 +37,10 @@ export interface JobStatus {
 export interface JobOptions {
 	lang_in: string;
 	lang_out: string;
+	/** 服务端 config.toml 里的 profile 名；提供了 llm 时为 null */
 	profile: string | null;
+	/** 插件设置里的大模型配置，优先于 profile */
+	llm: LlmJobOptions | null;
 	pages: string | null;
 	outputs: OutputKind[];
 	dual_translate_first: boolean;

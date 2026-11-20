@@ -1,6 +1,24 @@
-import { debounce, Notice, PluginSettingTab, Setting, type App, type Plugin } from "obsidian";
+import {
+	debounce,
+	Notice,
+	PluginSettingTab,
+	SecretComponent,
+	Setting,
+	type App,
+	type Plugin,
+} from "obsidian";
 import type { ServerClient } from "./api/client";
 import { errorMessage } from "./core/errors";
+import {
+	decodeProfileChoice,
+	DEFAULT_QPS,
+	encodeProfileChoice,
+	llmProfileIdFromBytes,
+	newLlmProfile,
+	parseExtraBody,
+	type LlmProfile,
+	type ProfileChoice,
+} from "./core/llm";
 import { DEFAULT_SETTINGS, type BabelReaderSettings } from "./core/settings-model";
 import { normalizeServerUrl } from "./core/url";
 import type { ServerLauncher } from "./launcher/server-launcher";
@@ -14,7 +32,7 @@ export interface SettingsHost extends Plugin {
 	onTranslationsDirChanged(): Promise<void>;
 }
 
-// 声明式设置 API（getSettingDefinitions）需要 1.13.0，而 minAppVersion 是 1.6.0，暂用 display()
+// 声明式设置 API（getSettingDefinitions）需要 1.13.0，而 minAppVersion 是 1.11.4，暂用 display()
 export class BabelReaderSettingTab extends PluginSettingTab {
 	/** 最近一次从服务端读到的 profile 列表（只在内存里） */
 	private profiles: string[] = [];
@@ -67,7 +85,7 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 			new Setting(containerEl)
 				.setName("自动启动服务")
 				.setDesc(
-					"点击翻译时如果连不上本机的翻译服务，就在后台启动它。只对本机地址生效；由插件启动的服务会在关闭 Obsidian 时一并结束。",
+					"点击翻译或「测试连接」时如果连不上本机的翻译服务，就在后台启动它。只对本机地址生效；由插件启动的服务会在关闭 Obsidian 时一并结束。",
 				)
 				.addToggle((t) =>
 					t.setValue(s.autoStartServer).onChange(async (v) => {
@@ -97,27 +115,7 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 				);
 		}
 
-		new Setting(containerEl)
-			.setName("翻译配置")
-			.setDesc("对应服务端配置里的 profile。留空则使用服务端的第一个。")
-			.addDropdown((d) => {
-				d.addOption("", "（服务端默认）");
-				const names = new Set(this.profiles);
-				if (s.profile !== "") names.add(s.profile);
-				for (const name of names) d.addOption(name, name);
-				d.setValue(s.profile).onChange(async (v) => {
-					s.profile = v;
-					await this.host.saveSettings();
-				});
-			})
-			.addExtraButton((b) =>
-				b
-					.setIcon("refresh-cw")
-					.setTooltip("从服务端读取")
-					.onClick(async () => {
-						await this.loadProfiles();
-					}),
-			);
+		this.displayLlm(containerEl);
 
 		new Setting(containerEl).setName("翻译").setHeading();
 
@@ -199,8 +197,19 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 			return;
 		}
 		button.disabled = true;
+		// 放在对象里：在回调里赋值，TS 的控制流分析不会把它误判为恒为 null
+		const progress: { notice: Notice | null } = { notice: null };
 		try {
-			const h = await this.host.client.health();
+			const s = this.host.settings;
+			const h = await this.host.launcher.connect(
+				{ serverUrl: s.serverUrl, serverDir: s.serverDir, autoStart: s.autoStartServer },
+				() => false,
+				() => {
+					// 0 表示不自动消失，就绪或失败后手动关掉
+					progress.notice = new Notice("正在启动翻译服务…", 0);
+				},
+			);
+			if (!h) return;
 			new Notice(
 				`连接成功：服务 ${h.server_version}，pdf2zh_next ${h.pdf2zh_next_version}，BabelDOC ${h.babeldoc_version}`,
 			);
@@ -208,8 +217,201 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 		} catch (err) {
 			new Notice(`连接失败：${errorMessage(err)}`, 8000);
 		} finally {
+			progress.notice?.hide();
 			button.disabled = false;
 		}
+	}
+
+	/** 「大模型」分组：选用哪个配置，以及插件里的配置列表 */
+	private displayLlm(containerEl: HTMLElement): void {
+		const s = this.host.settings;
+		new Setting(containerEl).setName("大模型").setHeading();
+
+		const current: ProfileChoice =
+			s.llmProfileId !== ""
+				? { kind: "plugin", id: s.llmProfileId }
+				: s.profile !== ""
+					? { kind: "server", name: s.profile }
+					: { kind: "server-default" };
+
+		new Setting(containerEl)
+			.setName("使用的配置")
+			.setDesc(
+				"选择下面在插件里添加的配置，或服务端 config.toml 里的 profile（点刷新按钮从服务端读取）。",
+			)
+			.addDropdown((d) => {
+				for (const p of s.llmProfiles) {
+					d.addOption(encodeProfileChoice({ kind: "plugin", id: p.id }), p.name || "未命名");
+				}
+				d.addOption(encodeProfileChoice({ kind: "server-default" }), "服务端默认（config.toml 的第一个）");
+				const names = new Set(this.profiles);
+				if (s.profile !== "") names.add(s.profile);
+				for (const name of names) {
+					d.addOption(encodeProfileChoice({ kind: "server", name }), `服务端：${name}`);
+				}
+				d.setValue(encodeProfileChoice(current)).onChange(async (v) => {
+					const choice = decodeProfileChoice(v);
+					s.llmProfileId = choice.kind === "plugin" ? choice.id : "";
+					s.profile = choice.kind === "server" ? choice.name : "";
+					await this.host.saveSettings();
+				});
+			})
+			.addExtraButton((b) =>
+				b
+					.setIcon("refresh-cw")
+					.setTooltip("从服务端读取 profile")
+					.onClick(async () => {
+						await this.loadProfiles();
+					}),
+			);
+
+		for (const profile of s.llmProfiles) this.displayLlmProfile(containerEl, profile);
+
+		new Setting(containerEl)
+			.setDesc("API key 保存在 Obsidian 的密钥存储里，插件设置文件只记录密钥的名称。")
+			.addButton((b) =>
+				b.setButtonText("添加大模型配置").onClick(async () => {
+					const bytes = new Uint8Array(6);
+					crypto.getRandomValues(bytes);
+					const profile = newLlmProfile(llmProfileIdFromBytes(bytes));
+					s.llmProfiles.push(profile);
+					// 第一次添加时直接选用它
+					if (s.llmProfileId === "" && s.profile === "") s.llmProfileId = profile.id;
+					await this.host.saveSettings();
+					this.display();
+				}),
+			);
+	}
+
+	private displayLlmProfile(containerEl: HTMLElement, p: LlmProfile): void {
+		const s = this.host.settings;
+		const save = () => this.host.saveSettings();
+
+		new Setting(containerEl)
+			.setName(`配置：${p.name || "未命名"}`)
+			.setHeading()
+			.addExtraButton((b) =>
+				b
+					.setIcon("trash")
+					.setTooltip("删除这个配置（密钥存储里的 API key 不会被删除）")
+					.onClick(async () => {
+						s.llmProfiles = s.llmProfiles.filter((x) => x.id !== p.id);
+						if (s.llmProfileId === p.id) s.llmProfileId = "";
+						await save();
+						this.display();
+					}),
+			);
+
+		new Setting(containerEl).setName("名称").addText((t) =>
+			t.setValue(p.name).onChange(async (v) => {
+				p.name = v.trim();
+				await save();
+			}),
+		);
+
+		new Setting(containerEl)
+			.setName("接口地址")
+			.setDesc("OpenAI 兼容接口的地址。")
+			.addText((t) =>
+				t
+					.setPlaceholder("https://api.deepseek.com")
+					.setValue(p.baseUrl)
+					.onChange(async (v) => {
+						p.baseUrl = v.trim();
+						await save();
+					}),
+			);
+
+		new Setting(containerEl).setName("模型").addText((t) =>
+			t
+				.setPlaceholder("deepseek-chat")
+				.setValue(p.model)
+				.onChange(async (v) => {
+					p.model = v.trim();
+					await save();
+				}),
+		);
+
+		new Setting(containerEl)
+			.setName("关闭思考")
+			.setDesc(
+				"DeepSeek、通义千问、智谱 GLM、豆包等默认开启思考的模型建议打开：先推理再翻译会慢很多倍。OpenAI 等不支持这个参数的接口请关闭。",
+			)
+			.addToggle((t) =>
+				t.setValue(p.disableThinking).onChange(async (v) => {
+					p.disableThinking = v;
+					await save();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("API key")
+			.setDesc("从 Obsidian 的密钥存储里选择或新建。")
+			.addComponent((el) =>
+				new SecretComponent(this.app, el).setValue(p.secretId).onChange(async (v) => {
+					p.secretId = v ?? "";
+					await save();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("每秒请求数")
+			.setDesc("1 到 100 的整数，注意服务商的限流。")
+			.addText((t) =>
+				t
+					.setPlaceholder(String(DEFAULT_QPS))
+					.setValue(String(p.qps))
+					.onChange(async (v) => {
+						const n = Number(v.trim());
+						// 输入到一半（如空字符串）时不改，翻译时还会再校验
+						if (!Number.isInteger(n) || n < 1 || n > 100) return;
+						p.qps = n;
+						await save();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("温度")
+			.setDesc("可选；留空则不发送。")
+			.addText((t) =>
+				t.setValue(p.temperature).onChange(async (v) => {
+					p.temperature = v.trim();
+					await save();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("超时（秒）")
+			.setDesc("可选；留空则用默认值。")
+			.addText((t) =>
+				t.setValue(p.timeout).onChange(async (v) => {
+					p.timeout = v.trim();
+					await save();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("额外请求参数（高级）")
+			.setDesc(
+				"一般不用填。JSON 对象，原样合并进每次请求，用于服务商的专有参数；与「关闭思考」冲突时以这里为准。",
+			)
+			.addTextArea((t) => {
+				t.setPlaceholder('{"top_p": 0.9}')
+					.setValue(p.extraBody)
+					.onChange(async (v) => {
+						p.extraBody = v;
+						await save();
+					});
+				t.inputEl.addClass("babel-reader-json-input");
+				// 离开输入框时检查一次 JSON，及早发现写错
+				this.host.registerDomEvent(t.inputEl, "blur", () => {
+					try {
+						parseExtraBody(t.getValue());
+					} catch (err) {
+						new Notice(`「${p.name || "未命名"}」的${errorMessage(err)}`, 6000);
+					}
+				});
+			});
 	}
 
 	private checkServerDir(): void {

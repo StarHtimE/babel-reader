@@ -45,6 +45,7 @@ describe("settings", () => {
 			lang_in: "en",
 			lang_out: "zh",
 			profile: null,
+			llm: null,
 			pages: null,
 			outputs: ["mono"],
 			dual_translate_first: false,

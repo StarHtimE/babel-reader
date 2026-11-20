@@ -83,7 +83,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 2. **原文是正本。** 链接、反链、高亮只落在原文；插件永远不修改原文文件；译文只写进译文目录。
 3. **Obsidian 开发者政策。**
    - 插件不得安装或更新自身及其依赖：不在插件里执行 uv / pip / npm，不下载服务端
-   - 允许启动用户**已安装**的服务（`src/launcher/`）：只运行 `<服务目录>/.venv` 里现成的 `babel-reader-server`，不用 `uv run`（它会自动同步依赖）。仅在点翻译且连不上本机地址时启动，不随 Obsidian 启动；只结束自己启动的进程（整棵进程树），在 `onunload` 和 `workspace.on('quit')` 时结束
+   - 允许启动用户**已安装**的服务（`src/launcher/`）：只运行 `<服务目录>/.venv` 里现成的 `babel-reader-server`，不用 `uv run`（它会自动同步依赖）。仅在点翻译或「测试连接」且连不上本机地址时启动，不随 Obsidian 启动；只结束自己启动的进程（整棵进程树），在 `onunload` 和 `workspace.on('quit')` 时结束
    - 运行外部程序、访问仓库外文件都要在 README 的「隐私与网络」里写明
    - 网络访问只限用户配置的服务地址；新增任何网络行为都要同步更新 README 的「隐私与网络」
    - 不加遥测，不混淆代码
@@ -92,7 +92,10 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
    - 网络请求统一用 `requestUrl`（没有 CORS 问题，移动端可用），不用 `fetch` / `EventSource`
    - 哈希用 Web Crypto：`crypto.subtle.digest('SHA-256', buf)`
    - 文件读写用 Vault API（`readBinary` / `createBinary` / `modifyBinary`），不用 Adapter API；用户给的路径一律过 `normalizePath`
-5. **密钥不进仓库。** 大模型 API key 只存在服务端 `config.toml`。插件设置里只有服务地址、访问令牌和 profile 名。
+5. **密钥不进仓库。** 大模型 API key 只能存在两处：服务端 `config.toml`，或 Obsidian 的密钥存储（`app.secretStorage`，设置页用 `SecretComponent`）。插件的 `data.json` 只记录密钥的名称（`secretId`），永远不写密钥本身。
+   - 插件只在提交任务时取出密钥，放进 `options.llm` 发给服务；服务地址既不是本机也不是 https 时拒绝发送（`canSendSecretTo`）
+   - 服务端用 `SecretStr` 接收，交给翻译前从 `options` 里去掉；日志、任务状态、校验错误里都不得出现密钥明文
+   - manifest 里只记配置名，不记密钥
 6. **AGPL 边界。** 插件代码不得 import、复制或改写 BabelDOC / pdf2zh_next 的代码，两边只通过下面的 HTTP 接口交互。服务端只有 `translate.py` 直接依赖 pdf2zh_next。
 
 ## 插件 ⇄ 服务 HTTP 接口（v1）
@@ -101,7 +104,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | `{ok, server_version, pdf2zh_next_version, babeldoc_version}` |
+| GET | `/health` | `{ok, server_version, pdf2zh_next_version, babeldoc_version, features}`；`features` 列出可选功能，含 `"llm"` 表示接受 `options.llm`（旧版服务端没有此字段） |
 | GET | `/profiles` | `{profiles: [名称, ...]}`（不含 key） |
 | POST | `/jobs` | `multipart/form-data`：`file`（PDF）+ `options`（JSON 字符串）→ `{job_id}` |
 | GET | `/jobs/{id}` | `{state, stage, stage_progress, overall_progress, error?, outputs?}`；`outputs` 只在 `done` 时出现，为种类列表如 `["mono","dual"]` |
@@ -120,6 +123,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
   "lang_in": "en",
   "lang_out": "zh",
   "profile": "deepseek",
+  "llm": null,
   "pages": null,
   "outputs": ["mono", "dual"],
   "dual_translate_first": false,
@@ -129,6 +133,23 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 ```
 
 服务端负责把 `options` 映射到 pdf2zh_next 的 `SettingsModel`，并固定使用无水印输出。
+
+`llm` 为插件设置里的大模型配置，提供时优先于 `profile`（插件此时把 `profile` 置为 `null`）：
+
+```json
+{
+  "name": "DeepSeek",
+  "base_url": "https://api.deepseek.com",
+  "api_key": "sk-...",
+  "model": "deepseek-chat",
+  "qps": 4,
+  "temperature": null,
+  "timeout": null,
+  "extra_body": { "thinking": { "type": "disabled" } }
+}
+```
+
+`temperature` / `timeout` 为数字字符串或 `null`（不发送）。服务端没有任何 profile 时，只能使用 `llm`。
 
 ## 译文在仓库里的布局
 
@@ -182,6 +203,6 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 
 ## 路线图
 
-- **v0.1**：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译时按需自动启动本机服务（默认开启）
+- **v0.1**：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译或测试连接时按需自动启动本机服务（默认开启）；在插件设置里配置大模型（API key 存 Obsidian 密钥存储，minAppVersion 1.11.4）
 - **v0.2**：右键批量翻译与队列；过期检测；重命名 / 删除跟踪；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
 - **v0.3**：原文与译文双 pane 同步滚动；移动端裁剪阅读；局域网远程服务（令牌鉴权）

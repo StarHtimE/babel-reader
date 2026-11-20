@@ -58,6 +58,10 @@ export function parseHealth(data: unknown): HealthInfo {
 		server_version: expectString(obj, "server_version", "health"),
 		pdf2zh_next_version: expectString(obj, "pdf2zh_next_version", "health"),
 		babeldoc_version: expectString(obj, "babeldoc_version", "health"),
+		// 旧版服务端没有这个字段：当作空列表
+		features: Array.isArray(obj.features)
+			? obj.features.filter((x): x is string => typeof x === "string")
+			: [],
 	};
 }
 

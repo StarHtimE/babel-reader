@@ -51,14 +51,11 @@ def create_app(
     async def runner(
         job: Job, on_progress: Callable[[str | None, float, float | None], None]
     ) -> dict[OutputKind, Path]:
-        profile = config.find_profile(job.profile_name)
-        if profile is None:
-            raise RuntimeError(f"profile {job.profile_name} 不存在")
         return await run_translation(
             job.input_path,
             job.output_dir,
             job.options,
-            profile,
+            job.profile,
             on_progress,
             job.glossary_path,
         )
@@ -107,6 +104,8 @@ def create_app(
             "server_version": __version__,
             "pdf2zh_next_version": pdf2zh_version,
             "babeldoc_version": babeldoc_version,
+            # 可选功能；插件据此判断能否提交 options.llm（旧版服务端会忽略它）
+            "features": ["llm"],
         }
 
     @router.get("/profiles")
@@ -129,11 +128,20 @@ def create_app(
                 status_code=400, detail=f"options.{loc} 不合法：{first.get('msg')}"
             ) from e
 
-        profile = config.find_profile(opts.profile)
-        if profile is None:
-            if not config.profiles:
-                raise HTTPException(status_code=400, detail="服务端没有配置任何 profile")
-            raise HTTPException(status_code=400, detail=f"未知的 profile：{opts.profile}")
+        if opts.llm is not None:
+            # 插件提供了大模型配置：优先使用。之后只在 Job.profile 里保留密钥，options 里去掉
+            profile = opts.llm.to_profile()
+            opts = opts.model_copy(update={"llm": None})
+        else:
+            found = config.find_profile(opts.profile)
+            if found is None:
+                if not config.profiles:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="服务端没有配置任何 profile，请在插件设置里添加大模型配置",
+                    )
+                raise HTTPException(status_code=400, detail=f"未知的 profile：{opts.profile}")
+            profile = found
 
         limit = config.max_upload_mb * 1024 * 1024
         data = bytearray()
@@ -147,7 +155,7 @@ def create_app(
         if not data.startswith(b"%PDF-"):
             raise HTTPException(status_code=400, detail="上传的文件不是 PDF")
 
-        job = manager.submit(bytes(data), opts, profile.name)
+        job = manager.submit(bytes(data), opts, profile)
         return {"job_id": job.id}
 
     @router.get("/jobs/{job_id}")

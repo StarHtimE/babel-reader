@@ -33,6 +33,7 @@ class FakeTranslator:
                 "input": input_path.read_bytes(),
                 "options": options,
                 "profile": profile.name,
+                "profile_obj": profile,
                 "glossary": glossary_path.read_text(encoding="utf-8") if glossary_path else None,
             }
         )
@@ -53,8 +54,8 @@ class FakeTranslator:
         return out
 
 
-def make_client(tmp_path, translator, **cfg):
-    config = ServerConfig(work_dir=tmp_path / "work", profiles=PROFILES, **cfg)
+def make_client(tmp_path, translator, profiles=PROFILES, **cfg):
+    config = ServerConfig(work_dir=tmp_path / "work", profiles=profiles, **cfg)
     app = create_app(config, translator=translator, versions=lambda: ("2.10.2", "0.7.1"))
     return TestClient(app)
 
@@ -86,6 +87,7 @@ def test_health_and_profiles(tmp_path):
             "server_version": "0.1.0",
             "pdf2zh_next_version": "2.10.2",
             "babeldoc_version": "0.7.1",
+            "features": ["llm"],
         }
         p = c.get("/v1/profiles").json()
         assert p == {"profiles": ["deepseek", "local"]}
@@ -235,3 +237,80 @@ def test_purge_expired(tmp_path):
         assert manager.purge_expired(now=time.time() + 7200) == 1
         assert not work_dir.exists()
         assert c.get(f"/v1/jobs/{job_id}").status_code == 404
+
+
+LLM = {
+    "name": "我的 DeepSeek",
+    "base_url": "https://api.example.com/v1",
+    "api_key": "sk-from-plugin",
+    "model": "m-plugin",
+    "qps": 8,
+    "temperature": "0.3",
+    "timeout": "60",
+    "extra_body": {"thinking": {"type": "disabled"}},
+}
+
+
+def test_plugin_llm_overrides_server_profile(tmp_path, caplog):
+    fake = FakeTranslator()
+    caplog.set_level("DEBUG")
+    with make_client(tmp_path, fake) as c:
+        r = submit(c, {"profile": "local", "llm": LLM})
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+        st = wait_state(c, job_id, {"done"})
+
+        used = fake.calls[0]["profile_obj"]
+        assert used.name == "我的 DeepSeek"
+        assert used.base_url == "https://api.example.com/v1"
+        assert used.api_key == "sk-from-plugin"
+        assert used.model == "m-plugin"
+        assert used.qps == 8
+        assert used.temperature == "0.3"
+        assert used.timeout == "60"
+        assert used.extra_body == {"thinking": {"type": "disabled"}}
+        # 交给翻译函数的 options 里不再带密钥
+        assert fake.calls[0]["options"].llm is None
+        # 状态和日志里都没有密钥明文
+        assert "sk-from-plugin" not in json.dumps(st)
+        assert "sk-from-plugin" not in caplog.text
+
+
+def test_plugin_llm_without_server_profiles(tmp_path):
+    fake = FakeTranslator()
+    with make_client(tmp_path, fake, profiles=()) as c:
+        assert c.get("/v1/profiles").json() == {"profiles": []}
+        r = submit(c, {"lang_out": "zh"})
+        assert r.status_code == 400
+        assert "插件设置" in r.json()["detail"]
+
+        r = submit(c, {"llm": {k: LLM[k] for k in ("base_url", "api_key", "model")}})
+        assert r.status_code == 200, r.text
+        wait_state(c, r.json()["job_id"], {"done"})
+        used = fake.calls[0]["profile_obj"]
+        assert used.name == "plugin"
+        assert used.qps == 4
+        assert used.temperature is None
+        assert used.extra_body is None
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"base_url": "ftp://x"},
+        {"base_url": ""},
+        {"api_key": ""},
+        {"model": ""},
+        {"qps": 0},
+        {"temperature": "warm"},
+        {"timeout": "-1"},
+        {"extra_body": [1, 2]},
+    ],
+)
+def test_plugin_llm_validation(tmp_path, patch):
+    with make_client(tmp_path, FakeTranslator()) as c:
+        r = submit(c, {"llm": {**LLM, **patch}})
+        assert r.status_code == 400
+        assert r.json()["detail"].startswith("options.llm.")
+        # 校验错误里也不回显密钥
+        assert "sk-from-plugin" not in r.text

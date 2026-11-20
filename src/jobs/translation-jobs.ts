@@ -2,11 +2,11 @@ import { Notice, type App, type TFile } from "obsidian";
 import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import { sha256Hex } from "../core/hash";
-import { isConnectionError, localLaunchTarget } from "../core/launch";
 import { PollCancelledError, pollJob } from "../core/poll";
 import { formatProgress } from "../core/progress";
-import { buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
-import type { HealthInfo, JobStatus, OutputKind } from "../core/types";
+import { buildLlmJobOptions, canSendSecretTo, type LlmJobOptions } from "../core/llm";
+import { activeLlmProfile, buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
+import { FEATURE_LLM_OPTIONS, type HealthInfo, type JobStatus, type OutputKind } from "../core/types";
 import type { ServerLauncher } from "../launcher/server-launcher";
 import type { TranslationStore } from "../store/translation-store";
 import { confirmDialog } from "../view/confirm-modal";
@@ -63,12 +63,21 @@ export class TranslationJobs {
 		const job: ActiveJob = { file, jobId: null, cancelled: false };
 		this.active = job;
 		const settings = this.getSettings();
-		const options = buildJobOptions(settings);
 
 		try {
+			// 先把大模型配置和密钥准备好：配置有问题时不必连服务
+			const llm = this.resolveLlm(settings);
+			const options = buildJobOptions(settings, {}, llm);
+
 			this.showStatus("连接服务…");
 			const engine = await this.connect(job, settings);
 			if (!engine || job.cancelled) return;
+			// 旧版服务端会忽略 options.llm，悄悄改用 config.toml 的 profile，这里提前拦下
+			if (llm && !engine.features.includes(FEATURE_LLM_OPTIONS)) {
+				throw new Error(
+					"翻译服务版本太旧，不支持插件里的大模型配置。请更新服务端（git pull 后 uv sync）并重启 Obsidian",
+				);
+			}
 
 			this.showStatus("读取原文…");
 			const data = await this.app.vault.readBinary(file);
@@ -113,7 +122,8 @@ export class TranslationJobs {
 				langIn: options.lang_in,
 				langOut: options.lang_out,
 				files,
-				profile: options.profile,
+				// manifest 只记配置名，不记密钥
+				profile: llm?.name ?? options.profile,
 				pages: options.pages,
 				engine,
 			});
@@ -129,21 +139,34 @@ export class TranslationJobs {
 	}
 
 	/**
-	 * 连接服务；连不上且开启了自动启动时，在本机启动服务再连。
-	 * 被取消时返回 null。
+	 * 选用了插件里的大模型配置时，从 Obsidian 的密钥存储取出 API key 并拼成任务参数；
+	 * 用服务端 profile 时返回 null。
 	 */
-	private async connect(job: ActiveJob, settings: BabelReaderSettings): Promise<HealthInfo | null> {
-		try {
-			return await this.client.health();
-		} catch (err) {
-			if (!isConnectionError(err) || !settings.autoStartServer || !this.launcher.supported) throw err;
-			// 服务地址不是本机时，原样报告连接失败
-			if (localLaunchTarget(settings.serverUrl) === null) throw err;
+	private resolveLlm(settings: BabelReaderSettings): LlmJobOptions | null {
+		if (settings.llmProfileId === "") return null;
+		const profile = activeLlmProfile(settings);
+		if (!profile) throw new Error("选用的大模型配置已被删除，请在设置里重新选择");
+		if (!canSendSecretTo(settings.serverUrl)) {
+			throw new Error("服务地址既不是本机也不是 https，插件不会通过明文连接发送 API key");
 		}
-		this.showStatus("启动翻译服务…");
-		return this.launcher.startAndWait(
-			{ serverUrl: settings.serverUrl, serverDir: settings.serverDir },
+		const id = profile.secretId.trim();
+		const apiKey = id === "" ? null : this.app.secretStorage.getSecret(id);
+		if (apiKey === null || apiKey.trim() === "") {
+			throw new Error(`大模型配置「${profile.name}」没有设置 API key，请在设置里选择或新建密钥`);
+		}
+		return buildLlmJobOptions(profile, apiKey);
+	}
+
+	/** 连接服务（必要时自动启动）；被取消时返回 null */
+	private connect(job: ActiveJob, settings: BabelReaderSettings): Promise<HealthInfo | null> {
+		return this.launcher.connect(
+			{
+				serverUrl: settings.serverUrl,
+				serverDir: settings.serverDir,
+				autoStart: settings.autoStartServer,
+			},
 			() => job.cancelled,
+			() => this.showStatus("启动翻译服务…"),
 		);
 	}
 

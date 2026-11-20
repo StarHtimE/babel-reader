@@ -13,3 +13,10 @@
 	color: var(--interactive-accent);
 	background-color: var(--background-modifier-hover);
 }
+
+/* 设置页：额外请求参数（JSON） */
+.babel-reader-json-input {
+	font-family: var(--font-monospace);
+	min-height: 4em;
+	width: 100%;
+}

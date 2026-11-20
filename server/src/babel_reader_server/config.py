@@ -1,4 +1,7 @@
-"""服务端配置：从 config.toml 读取。API key 只存在这里，不会发给插件。"""
+"""服务端配置：从 config.toml 读取。
+
+这里的 API key 不会发给插件；插件也可以随任务提交自己的大模型配置（见 jobs.LlmOptions）。
+"""
 
 from __future__ import annotations
 

@@ -3,6 +3,7 @@ import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import {
 	cleanUserPath,
+	isConnectionError,
 	launchFailureHint,
 	localLaunchTarget,
 	OutputTail,
@@ -116,6 +117,26 @@ export class ServerLauncher {
 	checkServerDir(rawDir: string): string[] {
 		const result = this.resolvePaths(rawDir);
 		return "problems" in result ? result.problems : [];
+	}
+
+	/**
+	 * 连接服务；连不上本机服务且开启了自动启动时，先启动再连。
+	 * 返回 /health 的结果；被取消时返回 null。翻译和「测试连接」共用。
+	 */
+	async connect(
+		opts: { serverUrl: string; serverDir: string; autoStart: boolean },
+		isCancelled: () => boolean,
+		onStarting: () => void,
+	): Promise<HealthInfo | null> {
+		try {
+			return await this.client.health();
+		} catch (err) {
+			if (!isConnectionError(err) || !opts.autoStart || !this.supported) throw err;
+			// 服务地址不是本机时，原样报告连接失败
+			if (localLaunchTarget(opts.serverUrl) === null) throw err;
+		}
+		onStarting();
+		return this.startAndWait(opts, isCancelled);
 	}
 
 	/**

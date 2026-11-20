@@ -15,7 +15,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+from .config import Profile
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +25,39 @@ OutputKind = Literal["mono", "dual"]
 
 _LANG_PATTERN = r"^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*$"
 _PAGES_PATTERN = r"^\s*\d*\s*-?\s*\d*\s*(,\s*\d*\s*-?\s*\d*\s*)*$"
+
+
+_NUMBER_PATTERN = r"^\d+(\.\d+)?$"
+
+
+class LlmOptions(BaseModel):
+    """插件设置里的大模型配置，随任务一起提交；提供时优先于 config.toml 的 profile。
+
+    api_key 用 SecretStr：打印、日志和校验错误里都不会出现明文。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: Annotated[str, Field(min_length=1, max_length=100)] = "plugin"
+    base_url: Annotated[str, Field(pattern=r"^https?://\S+$", max_length=2000)]
+    api_key: Annotated[SecretStr, Field(min_length=1, max_length=4000)]
+    model: Annotated[str, Field(min_length=1, max_length=200)]
+    qps: Annotated[int, Field(ge=1, le=100)] = 4
+    temperature: Annotated[str | None, Field(pattern=_NUMBER_PATTERN)] = None
+    timeout: Annotated[str | None, Field(pattern=_NUMBER_PATTERN)] = None
+    extra_body: dict[str, Any] | None = None
+
+    def to_profile(self) -> Profile:
+        return Profile(
+            name=self.name,
+            base_url=self.base_url,
+            api_key=self.api_key.get_secret_value(),
+            model=self.model,
+            qps=self.qps,
+            temperature=self.temperature,
+            timeout=self.timeout,
+            extra_body=self.extra_body or None,
+        )
 
 
 class JobOptions(BaseModel):
@@ -33,6 +68,7 @@ class JobOptions(BaseModel):
     lang_in: Annotated[str, Field(pattern=_LANG_PATTERN)] = "en"
     lang_out: Annotated[str, Field(pattern=_LANG_PATTERN)] = "zh"
     profile: str | None = None
+    llm: LlmOptions | None = None
     pages: Annotated[str | None, Field(max_length=500)] = None
     outputs: list[OutputKind] = Field(default_factory=lambda: ["mono", "dual"])
     dual_translate_first: bool = False
@@ -76,7 +112,8 @@ class Job:
     options: JobOptions
     work_dir: Path
     input_path: Path
-    profile_name: str
+    #: 已解析好的大模型配置（来自 config.toml 或插件）；可能含 API key，不要打印
+    profile: Profile = field(repr=False)
     state: JobState = JobState.QUEUED
     stage: str | None = None
     stage_progress: float = 0.0
@@ -178,7 +215,7 @@ class JobManager:
 
     # ---- 对外操作 -------------------------------------------------------
 
-    def submit(self, pdf: bytes, options: JobOptions, profile_name: str) -> Job:
+    def submit(self, pdf: bytes, options: JobOptions, profile: Profile) -> Job:
         job_id = secrets.token_urlsafe(12)
         work_dir = self.root / job_id
         work_dir.mkdir()
@@ -191,12 +228,12 @@ class JobManager:
             options=options,
             work_dir=work_dir,
             input_path=input_path,
-            profile_name=profile_name,
+            profile=profile,
         )
         job.output_dir.mkdir()
         self._jobs[job_id] = job
         self._queue.put_nowait(job_id)
-        log.info("任务 %s 已排队（profile=%s）", job_id, profile_name)
+        log.info("任务 %s 已排队（profile=%s，model=%s）", job_id, profile.name, profile.model)
         return job
 
     def get(self, job_id: str) -> Job | None:

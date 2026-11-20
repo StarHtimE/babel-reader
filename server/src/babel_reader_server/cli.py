@@ -42,7 +42,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if host not in ("127.0.0.1", "localhost", "::1") and not config.token:
         logging.warning("服务监听在 %s 且没有设置 token，局域网内任何人都能调用", host)
     if not config.profiles:
-        logging.warning("config.toml 里没有任何 [[profiles]]，翻译请求会被拒绝")
+        logging.info("config.toml 里没有 [[profiles]]，只能使用插件设置里的大模型配置")
 
     import uvicorn
 

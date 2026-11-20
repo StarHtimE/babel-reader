@@ -11,6 +11,16 @@ describe("服务响应校验", () => {
 			babeldoc_version: "0.7.1",
 		});
 		expect(h.babeldoc_version).toBe("0.7.1");
+		// 旧版服务端没有 features
+		expect(h.features).toEqual([]);
+		const withFeatures = parseHealth({
+			ok: true,
+			server_version: "0.1.0",
+			pdf2zh_next_version: "2.10.2",
+			babeldoc_version: "0.7.1",
+			features: ["llm", 1],
+		});
+		expect(withFeatures.features).toEqual(["llm"]);
 		expect(() => parseHealth({ ok: false })).toThrow(ValidationError);
 		expect(() => parseHealth("ok")).toThrow(ValidationError);
 	});
