@@ -1,0 +1,16 @@
+# 本机文件
+CLAUDE.local.md
+.env
+Claude outputs/
+
+# 插件构建产物
+node_modules/
+main.js
+*.js.map
+
+# 服务端
+server/config.toml
+server/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

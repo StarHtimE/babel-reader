@@ -1,0 +1,15 @@
+/* Babel Reader */
+
+.babel-reader-status {
+	cursor: pointer;
+}
+
+.babel-reader-status.babel-reader-hidden {
+	display: none;
+}
+
+/* 头部三态切换：当前模式高亮 */
+.view-action.babel-reader-mode-button.is-active {
+	color: var(--interactive-accent);
+	background-color: var(--background-modifier-hover);
+}

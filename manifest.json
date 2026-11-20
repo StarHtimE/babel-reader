@@ -1,0 +1,10 @@
+{
+  "id": "babel-reader",
+  "name": "Babel Reader",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "Translate PDFs with BabelDOC via a local server, keeping the original layout, and switch between original, translated and side-by-side views.",
+  "author": "StarHtimE",
+  "authorUrl": "https://github.com/StarHtimE",
+  "isDesktopOnly": false
+}
