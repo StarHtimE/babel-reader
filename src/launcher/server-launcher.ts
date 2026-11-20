@@ -3,6 +3,7 @@ import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import {
 	cleanUserPath,
+	launchFailureHint,
 	localLaunchTarget,
 	OutputTail,
 	SERVER_CONFIG_FILE,
@@ -235,6 +236,8 @@ export class ServerLauncher {
 		if (all.length > 0) console.error(`[babel-reader] 翻译服务的输出：\n${all.join("\n")}`);
 		const lines = all.slice(-3);
 		const output = lines.length > 0 ? `：${lines.join(" / ")}` : "";
-		return `翻译服务启动失败，${reason}${output}。完整日志见 ${server.paths.log}`;
+		const hint = launchFailureHint(all);
+		const advice = hint ? `。${hint}` : `。完整日志见 ${server.paths.log}`;
+		return `翻译服务启动失败，${reason}${output}${advice}`;
 	}
 }

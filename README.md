@@ -208,6 +208,7 @@ uv run babel-reader-server warmup
 - **「测试连接」失败**：「测试连接」不会自动启动服务，服务没在运行时失败是正常的，点一次翻译即可启动；否则确认地址和端口正确，服务端设置了 `token` 时插件里要填相同的访问令牌
 - **自动启动失败**：提示里有原因和最后几行输出；完整日志在服务目录的 `server.log`。常见原因是没运行 `uv sync`、没有 `config.toml`，或端口被其他程序占用
 - **自动启动提示「No Python at …」（退出码 103）**：虚拟环境指向的 Python 不存在。常见于在 Claude 桌面版等打包应用（MSIX）的终端里运行过 `uv`：Windows 会把它写进 `AppData` 的文件重定向到该应用的私有目录，其他程序看不到。在普通的 PowerShell 里进入 `server` 目录重新运行 `uv python install 3.12` 和 `uv sync` 即可
+- **自动启动提示「uv trampoline failed to canonicalize script path」（退出码 1）**：`server` 目录被移动或改过名。虚拟环境 `.venv` 里写死了原来的绝对路径，不能跟着移动。关闭 Obsidian，在 `server` 目录删除 `.venv` 后重新运行 `uv sync`，再把插件设置里的「服务目录」改成新路径
 - **翻译很慢**：多半是模型开着思考模式，见上文 `extra_body`；也可以适当调高 `qps`（注意服务商的限流）
 - **第一次翻译好像卡住了**：没有运行 `warmup`，服务正在下载版面模型，等它下载完即可
 - **翻译失败**：弹出的提示里有服务端返回的原因（如 API key 无效、额度不足）；更详细的信息看服务端终端输出或 `--log-file` 指定的日志

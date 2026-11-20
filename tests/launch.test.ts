@@ -3,6 +3,7 @@ import { ApiError } from "../src/core/errors";
 import {
 	cleanUserPath,
 	isConnectionError,
+	launchFailureHint,
 	LaunchTimeoutError,
 	localLaunchTarget,
 	OutputTail,
@@ -52,6 +53,13 @@ describe("launch helpers", () => {
 		// 最多 3 个完整行，再加上尚未换行的 "f"
 		expect(tail.last(10)).toEqual(["b", "c", "de", "f"]);
 		expect(tail.last(2)).toEqual(["de", "f"]);
+	});
+
+	it("认出失效的虚拟环境", () => {
+		expect(launchFailureHint(["error: uv trampoline failed to canonicalize script path"])).toContain("uv sync");
+		expect(launchFailureHint(["No Python at '\"C:\\x\\python.exe'"])).toContain(".venv");
+		expect(launchFailureHint(["OSError: [Errno 10048] address already in use"])).toBeNull();
+		expect(launchFailureHint([])).toBeNull();
 	});
 
 	it("区分连接失败和 HTTP 错误", () => {

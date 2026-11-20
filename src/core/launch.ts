@@ -87,6 +87,19 @@ export class OutputTail {
 	}
 }
 
+/**
+ * 根据服务启动失败时的输出给出修复建议；认不出时返回 null。
+ * 虚拟环境里的启动器和 .pth 写死了绝对路径，服务目录被移动或改名、
+ * 或者 venv 指向的 Python 被删掉后，都会在 Python 启动前失败。
+ */
+export function launchFailureHint(output: string[]): string | null {
+	const text = output.join("\n");
+	if (/trampoline failed|No Python at|failed to (?:find|locate) python/i.test(text)) {
+		return "服务目录里的虚拟环境已失效（常见于服务目录被移动或改名）。请关闭 Obsidian，在你自己的终端里进入服务目录，删除 .venv 后重新运行 uv sync";
+	}
+	return null;
+}
+
 /** 连不上服务（网络层失败）；HTTP 错误说明服务在运行，不属于这一类 */
 export function isConnectionError(err: unknown): boolean {
 	return err instanceof ApiError && err.status === 0;
