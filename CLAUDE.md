@@ -209,12 +209,12 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 - `do_translate_async_stream(settings, file)` 产出 `progress_start / progress_update / progress_end / finish / error` 事件；进度字段 `stage, stage_progress, overall_progress`（`progress_start` / `progress_end` 没有 `overall_progress`）；完成事件 `event["translate_result"].mono_pdf_path / dual_pdf_path`
 - 翻译在子进程里跑；取消正在 await 该生成器的 asyncio task 即可，生成器的 `finally` 会结束子进程
 - warmup 入口：`babeldoc.assets.assets.warmup()`
-- 并发：每个任务一个子进程，理论上可并发；v0.1 仍串行
+- 并发：每个任务一个子进程，理论上可并发；目前仍串行：插件一次只提交一篇，其余在插件的队列里等（`src/core/queue.ts`）
 - 读 PDF 首页：公开 API `loadPdfJs()`（Obsidian 内置 pdf.js，移动端可用），返回类型是 `any`，在 `src/rename/read-first-page.ts` 里逐个方法做类型守卫；文本项 `{str, transform, width}`，字高取 `hypot(transform[2], transform[3])`，`transform[0] > 0 且 transform[1] ≈ 0` 才是横排文字（arXiv 左侧编号是旋转的）；元数据 `getMetadata()` → `info.Title` 与 XMP `metadata.get("dc:title")`（见过 XMP 把标题重复两遍）
 - Obsidian PDF 视图页号：`view.viewer.child.pdfViewer.pdfViewer.currentPageNumber`（1 起），回退 `view.getState().page`；跳页用公开的 `leaf.openFile(file, { eState: { subpath: "#page=N" } })`（参考 PDF++ `src/typings.d.ts`）
 
 ## 路线图
 
 - **v0.1**（已发布 0.1.0、0.1.1）：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译或测试连接时按需自动启动本机服务（默认开启）；在插件设置里配置大模型（API key 存 Obsidian 密钥存储，minAppVersion 1.11.4）
-- **v0.2**：右键批量翻译与队列（同时提供批量「按论文标题重命名」，复用同一个确认流程，改为列表逐项确认）；过期检测；重命名 / 删除跟踪（已完成）；按论文标题重命名：首页文字 + PDF 元数据（已完成；以后可加「让大模型识别」作为补充）；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
+- **v0.2**：右键批量翻译与队列（已完成；队列在插件端，状态栏 + 队列弹窗；配置或连接错误停下整个队列，单篇失败不影响后面）；批量「按论文标题重命名」（已完成；一个列表弹窗统一确认）；过期检测；重命名 / 删除跟踪（已完成）；按论文标题重命名：首页文字 + PDF 元数据（已完成；以后可加「让大模型识别」作为补充）；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
 - **v0.3**：原文与译文双 pane 同步滚动；移动端裁剪阅读；局域网远程服务（令牌鉴权）

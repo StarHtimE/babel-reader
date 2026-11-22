@@ -250,6 +250,42 @@ export class TranslationStore {
 		return this.index.resolve(path, this.getPreferredLangOut());
 	}
 
+	/** 原文是否已有目标语言为 langOut、且译文文件还在的译文 */
+	hasTranslation(sourcePath: string, langOut: string): boolean {
+		return this.index
+			.entriesForSource(sourcePath)
+			.some(
+				(e) =>
+					e.manifest.lang.out === langOut &&
+					(this.fileForMode(e, "mono") !== null || this.fileForMode(e, "dual") !== null),
+			);
+	}
+
+	/** 是否为可以当作原文处理的 PDF：不在译文目录里，也不是某组译文的文件 */
+	isSourcePdf(file: TAbstractFile): file is TFile {
+		return (
+			file instanceof TFile &&
+			file.extension.toLowerCase() === "pdf" &&
+			!this.isInTranslationsDir(file.path) &&
+			!this.index.isOutputPath(file.path)
+		);
+	}
+
+	/** 展开文件和文件夹（递归），取出其中的原文 PDF；去重并按路径排序 */
+	collectSourcePdfs(targets: readonly TAbstractFile[]): TFile[] {
+		const found = new Map<string, TFile>();
+		const visit = (f: TAbstractFile) => {
+			if (f instanceof TFolder) {
+				if (this.isInTranslationsDir(f.path)) return;
+				for (const child of f.children) visit(child);
+			} else if (this.isSourcePdf(f)) {
+				found.set(f.path, f);
+			}
+		};
+		for (const t of targets) visit(t);
+		return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
+	}
+
 	/** 找到某组译文在指定模式下对应的文件；文件已不存在时返回 null */
 	fileForMode(entry: TranslationEntry, mode: ViewMode): TFile | null {
 		const p = pathForMode(entry, mode);

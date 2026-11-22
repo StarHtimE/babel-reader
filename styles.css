@@ -48,3 +48,42 @@
 .babel-reader-rename-preview.mod-warning {
 	color: var(--text-error);
 }
+
+.babel-reader-rename-warning {
+	color: var(--text-error);
+}
+
+/* 批量重命名：列表弹窗加宽，每行的输入框占满 */
+.babel-reader-batch-rename-modal {
+	width: min(960px, 92vw);
+}
+
+.babel-reader-batch-rename-list {
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.babel-reader-batch-rename-row .setting-item-info {
+	flex: 1 1 40%;
+	min-width: 0;
+	word-break: break-word;
+}
+
+.babel-reader-batch-rename-row .setting-item-control {
+	flex: 1 1 55%;
+}
+
+/* 翻译队列 */
+.babel-reader-queue-list {
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.babel-reader-queue-item.is-error .setting-item-description {
+	color: var(--text-error);
+}
+
+.babel-reader-queue-item.is-done .setting-item-name,
+.babel-reader-queue-item.is-cancelled .setting-item-name {
+	color: var(--text-muted);
+}

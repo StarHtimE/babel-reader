@@ -1,11 +1,13 @@
-import { Modal, normalizePath, Notice, Setting, TFile, TFolder, type App, type TAbstractFile } from "obsidian";
+import { Modal, Notice, Setting, type App, type TAbstractFile, type TFile } from "obsidian";
 import { errorMessage } from "../core/errors";
-import { joinVaultPath, titleToFileName, uniqueFileName } from "../core/naming";
+import { titleToFileName } from "../core/naming";
 import { suggestTitle, type TitleCandidate, type TitleSuggestion } from "../core/title";
 import type { TranslationStore } from "../store/translation-store";
+import { BatchRenameModal, type BatchRenameRow } from "./batch-rename-modal";
 import { readFirstPage } from "./read-first-page";
+import { targetPathFor } from "./target-path";
 
-const SOURCE_LABELS: Record<TitleCandidate["source"], string> = {
+export const SOURCE_LABELS: Record<TitleCandidate["source"], string> = {
 	text: "首页文字",
 	metadata: "PDF 元数据",
 };
@@ -24,11 +26,13 @@ export class TitleRenamer {
 
 	/** 可以按标题重命名的文件：PDF 原文（译文文件不行） */
 	canRename(file: TAbstractFile | null): file is TFile {
-		return (
-			file instanceof TFile &&
-			file.extension.toLowerCase() === "pdf" &&
-			!this.store.index.isOutputPath(file.path)
-		);
+		return file !== null && this.store.isSourcePdf(file);
+	}
+
+	/** 识别一篇 PDF 的标题；识别不出时返回 null */
+	private async detect(file: TFile): Promise<TitleSuggestion | null> {
+		const info = await readFirstPage(await this.app.vault.readBinary(file));
+		return suggestTitle(info.page, info.metadataTitle);
 	}
 
 	async run(file: TFile): Promise<void> {
@@ -40,8 +44,7 @@ export class TitleRenamer {
 		}, 400);
 		let suggestion: TitleSuggestion | null;
 		try {
-			const info = await readFirstPage(await this.app.vault.readBinary(file));
-			suggestion = suggestTitle(info.page, info.metadataTitle);
+			suggestion = await this.detect(file);
 		} catch (err) {
 			console.error("[babel-reader] 识别标题失败", err);
 			new Notice(`识别标题失败：${errorMessage(err)}`);
@@ -57,6 +60,55 @@ export class TitleRenamer {
 		}
 		const hasTranslations = this.store.index.entriesForSource(file.path).length > 0;
 		new RenameModal(this.app, file, suggestion, hasTranslations, (path) => this.rename(file, path)).open();
+	}
+
+	/** 批量：逐篇识别标题，然后在一个列表弹窗里统一确认 */
+	async runBatch(files: readonly TFile[]): Promise<void> {
+		if (files.length === 0) {
+			new Notice("没有找到可以重命名的 PDF");
+			return;
+		}
+		if (files.length === 1 && files[0]) {
+			await this.run(files[0]);
+			return;
+		}
+		if (this.busy) return;
+		this.busy = true;
+		const notice = new Notice("", 0);
+		const rows: BatchRenameRow[] = [];
+		try {
+			for (const [i, file] of files.entries()) {
+				notice.setMessage(`正在识别论文标题 ${i + 1}/${files.length}…`);
+				try {
+					const suggestion = await this.detect(file);
+					rows.push({ file, suggestion, error: suggestion ? null : "没有识别出标题（可能是扫描版）" });
+				} catch (err) {
+					console.warn(`[babel-reader] 识别标题失败：${file.path}`, err);
+					rows.push({ file, suggestion: null, error: `识别失败：${errorMessage(err)}` });
+				}
+			}
+		} finally {
+			notice.hide();
+			this.busy = false;
+		}
+		new BatchRenameModal(this.app, rows, (plans) => this.renameMany(plans)).open();
+	}
+
+	private async renameMany(plans: readonly { file: TFile; path: string }[]): Promise<void> {
+		let ok = 0;
+		const failed: string[] = [];
+		for (const { file, path } of plans) {
+			if (path === file.path) continue;
+			try {
+				await this.app.fileManager.renameFile(file, path);
+				ok++;
+			} catch (err) {
+				console.error(`[babel-reader] 重命名失败：${file.path}`, err);
+				failed.push(file.name);
+			}
+		}
+		const tail = failed.length > 0 ? `，失败 ${failed.length} 篇：${failed.join("、")}` : "";
+		new Notice(`已重命名 ${ok} 篇${tail}`, failed.length > 0 ? 10000 : 5000);
 	}
 
 	private async rename(file: TFile, path: string): Promise<void> {
@@ -177,16 +229,4 @@ class RenameModal extends Modal {
 		this.close();
 		await this.onSubmit(path);
 	}
-}
-
-/** 把输入的文件名变成 file 所在文件夹里的最终路径（重名时加序号）；文件名无效时返回 null */
-function targetPathFor(file: TFile, name: string): string | null {
-	const base = titleToFileName(name);
-	if (base === null) return null;
-	const parent = file.parent;
-	const siblings = parent instanceof TFolder ? parent.children : [];
-	const taken = (n: string) => siblings.some((c) => c !== file && c.name.toLowerCase() === n.toLowerCase());
-	const fileName = uniqueFileName(base, `.${file.extension}`, taken);
-	const dir = parent && !parent.isRoot() ? parent.path : "";
-	return normalizePath(joinVaultPath(dir, fileName));
 }

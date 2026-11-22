@@ -2,6 +2,7 @@ import { Plugin, TFile } from "obsidian";
 import { ServerClient } from "./api/client";
 import { mergeSettings, type BabelReaderSettings } from "./core/settings-model";
 import type { ViewMode } from "./core/types";
+import { BatchActions } from "./jobs/batch-actions";
 import { TranslationJobs } from "./jobs/translation-jobs";
 import { ServerLauncher } from "./launcher/server-launcher";
 import { TitleRenamer } from "./rename/title-renamer";
@@ -9,6 +10,7 @@ import { BabelReaderSettingTab } from "./settings";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
 import { OrphanPrompt } from "./view/orphan-prompt";
+import { QueueModal } from "./view/queue-modal";
 
 /** 入口：只做注册，业务逻辑在各模块里 */
 export default class BabelReaderPlugin extends Plugin {
@@ -46,14 +48,14 @@ export default class BabelReaderPlugin extends Plugin {
 			() => this.settings,
 			statusEl,
 		);
-		this.registerDomEvent(statusEl, "click", () => void this.jobs.onStatusClick());
+		this.registerDomEvent(statusEl, "click", () => this.openQueue());
 		this.register(() => this.jobs.dispose());
 
 		this.renamer = new TitleRenamer(this.app, this.store);
 		this.switcher = new ModeSwitcher(
 			this.app,
 			this.store,
-			(file) => void this.jobs.translate(file),
+			(file) => this.jobs.translate(file),
 			(file) => void this.renamer.run(file),
 		);
 		this.register(() => this.switcher.detachAll());
@@ -65,17 +67,10 @@ export default class BabelReaderPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.switcher.refreshAll()));
 		this.registerEvent(this.app.workspace.on("file-open", () => this.switcher.refreshAll()));
 
-		this.registerEvent(
-			this.app.workspace.on("file-menu", (menu, file) => {
-				if (!this.renamer.canRename(file)) return;
-				menu.addItem((item) =>
-					item
-						.setTitle("按论文标题重命名")
-						.setIcon("pencil")
-						.onClick(() => void this.renamer.run(file)),
-				);
-			}),
-		);
+		// 文件列表右键菜单：单个 PDF、文件夹、多选
+		const batch = new BatchActions(this.app, this.store, this.jobs, this.renamer, () => this.settings);
+		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => batch.addMenuItems(menu, [file])));
+		this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => batch.addMenuItems(menu, files)));
 
 		const orphans = new OrphanPrompt(this.app, this.store);
 		this.register(() => orphans.dispose());
@@ -92,6 +87,10 @@ export default class BabelReaderPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			void this.store.rebuild();
 		});
+	}
+
+	private openQueue(): void {
+		new QueueModal(this.app, this.jobs).open();
 	}
 
 	async saveSettings(): Promise<void> {
@@ -111,7 +110,7 @@ export default class BabelReaderPlugin extends Plugin {
 				if (!(file instanceof TFile) || file.extension.toLowerCase() !== "pdf") return false;
 				// 译文文件本身不再翻译
 				if (this.store.index.isOutputPath(file.path)) return false;
-				if (!checking) void this.jobs.translate(file);
+				if (!checking) this.jobs.translate(file);
 				return true;
 			},
 		});
@@ -128,11 +127,17 @@ export default class BabelReaderPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "show-translation-queue",
+			name: "查看翻译队列",
+			callback: () => this.openQueue(),
+		});
+
+		this.addCommand({
 			id: "cancel-translation",
-			name: "取消翻译",
+			name: "取消全部翻译",
 			checkCallback: (checking) => {
 				if (!this.jobs.isRunning) return false;
-				if (!checking) void this.jobs.cancel();
+				if (!checking) this.jobs.cancelAll();
 				return true;
 			},
 		});

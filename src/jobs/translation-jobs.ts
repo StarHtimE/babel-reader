@@ -2,30 +2,46 @@ import { Notice, type App, type TFile } from "obsidian";
 import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import { sha256Hex } from "../core/hash";
+import { buildLlmJobOptions, canSendSecretTo, type LlmJobOptions } from "../core/llm";
 import { PollCancelledError, pollJob } from "../core/poll";
 import { formatProgress } from "../core/progress";
-import { buildLlmJobOptions, canSendSecretTo, type LlmJobOptions } from "../core/llm";
+import { JobQueue, summaryText, type QueueItem } from "../core/queue";
 import { activeLlmProfile, buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
-import { FEATURE_LLM_OPTIONS, type HealthInfo, type JobStatus, type OutputKind } from "../core/types";
+import { FEATURE_LLM_OPTIONS, type HealthInfo, type OutputKind } from "../core/types";
 import type { ServerLauncher } from "../launcher/server-launcher";
 import type { TranslationStore } from "../store/translation-store";
-import { confirmDialog } from "../view/confirm-modal";
 
 const POLL_INTERVAL_MS = 1000;
 
-interface ActiveJob {
-	file: TFile;
-	jobId: string | null;
-	cancelled: boolean;
+export type TranslationItem = QueueItem<TFile>;
+
+/** 配置或服务的问题：后面的任务也会失败，整个队列停下 */
+class QueueStopError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "QueueStopError";
+	}
+}
+
+/** 任务在运行中被取消 */
+class ItemCancelledError extends Error {
+	constructor() {
+		super("已取消");
+		this.name = "ItemCancelledError";
+	}
 }
 
 /**
- * 单篇翻译任务：上传 → 轮询进度 → 下载 → 写入译文目录。
- * v0.1 同一时间只跑一个任务；批量与队列在 v0.2。
+ * 翻译队列：逐篇执行 上传 → 轮询进度 → 下载 → 写入译文目录。
+ * 服务端也是串行执行，所以插件一次只提交一篇，其余在插件里排队。
  */
 export class TranslationJobs {
-	private active: ActiveJob | null = null;
+	private queue = new JobQueue<TFile>();
+	private jobIds = new Map<number, string>();
+	private pumping = false;
+	private disposed = false;
 	private timers = new Set<number>();
+	private listeners = new Set<() => void>();
 
 	constructor(
 		private readonly app: App,
@@ -40,102 +56,202 @@ export class TranslationJobs {
 	}
 
 	get isRunning(): boolean {
-		return this.active !== null;
+		return this.queue.busy;
 	}
 
-	/** 状态栏点击 */
-	async onStatusClick(): Promise<void> {
-		if (!this.active) return;
-		const ok = await confirmDialog(this.app, {
-			title: "取消翻译",
-			message: `要取消「${this.active.file.basename}」的翻译吗？`,
-			confirmText: "取消翻译",
-			cancelText: "继续翻译",
-		});
-		if (ok) await this.cancel();
+	items(): readonly TranslationItem[] {
+		return this.queue.list();
 	}
 
-	async translate(file: TFile): Promise<void> {
-		if (this.active) {
-			new Notice(`正在翻译「${this.active.file.basename}」，请等它完成或先取消`);
+	isQueued(file: TFile): boolean {
+		return this.queue.has(file);
+	}
+
+	onChange(cb: () => void): () => void {
+		this.listeners.add(cb);
+		return () => this.listeners.delete(cb);
+	}
+
+	private emitChange(): void {
+		for (const cb of this.listeners) cb();
+	}
+
+	/** 翻译一篇（加入队列） */
+	translate(file: TFile): void {
+		if (this.queue.has(file)) {
+			new Notice(`「${file.basename}」已在翻译队列里`);
 			return;
 		}
-		const job: ActiveJob = { file, jobId: null, cancelled: false };
-		this.active = job;
-		const settings = this.getSettings();
+		const ahead = this.queue.list().filter((i) => i.state === "waiting" || i.state === "running").length;
+		this.enqueue([file]);
+		if (ahead > 0) new Notice(`已加入翻译队列，前面还有 ${ahead} 篇`);
+	}
 
+	/** 加入一批；返回实际加入的数量（已在队列里的跳过） */
+	enqueue(files: readonly TFile[]): number {
+		const added = this.queue.add(files);
+		if (added.length > 0) {
+			this.emitChange();
+			void this.pump();
+		}
+		return added.length;
+	}
+
+	cancelItem(item: TranslationItem): void {
+		const running = this.queue.cancel(item);
+		if (running) this.abortRunning(item);
+		this.emitChange();
+	}
+
+	cancelAll(): void {
+		const running = this.queue.cancelAll();
+		if (running) this.abortRunning(running);
+		this.emitChange();
+	}
+
+	/** 插件卸载时调用：停止轮询，并尽力通知服务端取消 */
+	dispose(): void {
+		this.disposed = true;
+		const running = this.queue.cancelAll();
+		if (running) this.abortRunning(running);
+		for (const t of this.timers) window.clearTimeout(t);
+		this.timers.clear();
+		this.listeners.clear();
+	}
+
+	private abortRunning(item: TranslationItem): void {
+		const jobId = this.jobIds.get(item.id);
+		if (jobId) {
+			this.client.cancelJob(jobId).catch((err) => console.warn("[babel-reader] 通知服务取消失败", err));
+		}
+	}
+
+	private async pump(): Promise<void> {
+		if (this.pumping) return;
+		this.pumping = true;
 		try {
-			// 先把大模型配置和密钥准备好：配置有问题时不必连服务
-			const llm = this.resolveLlm(settings);
-			const options = buildJobOptions(settings, {}, llm);
-
-			this.showStatus("连接服务…");
-			const engine = await this.connect(job, settings);
-			if (!engine || job.cancelled) return;
-			// 旧版服务端会忽略 options.llm，悄悄改用 config.toml 的 profile，这里提前拦下
-			if (llm && !engine.features.includes(FEATURE_LLM_OPTIONS)) {
-				throw new Error(
-					"翻译服务版本太旧，不支持插件里的大模型配置。请更新服务端（git pull 后 uv sync）并重启 Obsidian",
-				);
+			for (let item = this.queue.start(); item && !this.disposed; item = this.queue.start()) {
+				this.emitChange();
+				await this.runItem(item);
+				this.emitChange();
 			}
-
-			this.showStatus("读取原文…");
-			const data = await this.app.vault.readBinary(file);
-			const sha256 = await sha256Hex(data);
-			if (job.cancelled) return;
-
-			this.showStatus("上传中…");
-			job.jobId = await this.client.createJob(data, options);
-			if (job.cancelled) {
-				// 用户在上传期间点了取消：通知服务端
-				await this.client.cancelJob(job.jobId).catch(() => undefined);
-				return;
-			}
-
-			const jobId = job.jobId;
-			const final = await pollJob({
-				fetchStatus: () => this.client.getJob(jobId),
-				sleep: (ms) => this.sleep(ms),
-				onUpdate: (s) => this.showStatus(formatProgress(s)),
-				isCancelled: () => job.cancelled,
-				intervalMs: POLL_INTERVAL_MS,
-			});
-			if (final.state !== "done") {
-				this.reportUnfinished(file, final);
-				return;
-			}
-
-			this.showStatus("下载译文…");
-			const files: Partial<Record<OutputKind, ArrayBuffer>> = {};
-			const available = final.outputs ?? options.outputs;
-			for (const kind of options.outputs) {
-				if (!available.includes(kind)) continue;
-				files[kind] = await this.client.downloadOutput(jobId, kind);
-				if (job.cancelled) return;
-			}
-			if (!files.mono && !files.dual) throw new Error("服务没有返回任何译文");
-
-			this.showStatus("写入仓库…");
-			await this.store.save({
-				source: file,
-				sourceSha256: sha256,
-				langIn: options.lang_in,
-				langOut: options.lang_out,
-				files,
-				// manifest 只记配置名，不记密钥
-				profile: llm?.name ?? options.profile,
-				pages: options.pages,
-				engine,
-			});
-			new Notice(`「${file.basename}」翻译完成`);
-		} catch (err) {
-			if (err instanceof PollCancelledError || job.cancelled) return;
-			console.error("[babel-reader] 翻译失败", err);
-			new Notice(`翻译失败：${errorMessage(err)}`, 10000);
 		} finally {
-			if (this.active === job) this.active = null;
+			this.pumping = false;
 			this.hideStatus();
 		}
+		if (this.disposed) return;
+		const summary = this.queue.summary();
+		if (summary.total > 1) {
+			const tail = summary.error > 0 ? "。点状态栏或运行命令「查看翻译队列」查看失败原因" : "";
+			new Notice(summaryText(summary) + tail, summary.error > 0 ? 10000 : 5000);
+		}
+	}
+
+	private async runItem(item: TranslationItem): Promise<void> {
+		const file = item.payload;
+		const single = this.queue.list().length === 1;
+		try {
+			await this.translateOne(item);
+			this.queue.finish(item, "done", "完成");
+			if (single) new Notice(`「${file.basename}」翻译完成`);
+		} catch (err) {
+			if (err instanceof ItemCancelledError || err instanceof PollCancelledError || item.cancelRequested) {
+				this.queue.finish(item, "cancelled", "已取消");
+				if (single) new Notice(`已取消「${file.basename}」的翻译`);
+				return;
+			}
+			const message = errorMessage(err);
+			console.error(`[babel-reader] 翻译失败：${file.path}`, err);
+			this.queue.finish(item, "error", "失败", message);
+			if (err instanceof QueueStopError) {
+				this.queue.cancelAll("因前一篇出错，队列已停止");
+				new Notice(`翻译失败：${message}`, 10000);
+			} else if (single) {
+				new Notice(`翻译失败：${message}`, 10000);
+			}
+		} finally {
+			this.jobIds.delete(item.id);
+		}
+	}
+
+	private async translateOne(item: TranslationItem): Promise<void> {
+		const file = item.payload;
+		const settings = this.getSettings();
+		const check = () => {
+			if (item.cancelRequested || this.disposed) throw new ItemCancelledError();
+		};
+		// 排队期间文件可能被删除（改名不影响：TFile 对象会跟着更新路径）
+		if (this.app.vault.getAbstractFileByPath(file.path) !== file) {
+			throw new Error("文件已不存在");
+		}
+
+		let llm: LlmJobOptions | null;
+		let engine: HealthInfo | null;
+		try {
+			// 先把大模型配置和密钥准备好：配置有问题时不必连服务
+			llm = this.resolveLlm(settings);
+			this.setDetail(item, "连接服务…");
+			engine = await this.connect(item, settings);
+		} catch (err) {
+			if (item.cancelRequested) throw new ItemCancelledError();
+			throw new QueueStopError(errorMessage(err));
+		}
+		if (!engine) throw new ItemCancelledError();
+		check();
+		// 旧版服务端会忽略 options.llm，悄悄改用 config.toml 的 profile，这里提前拦下
+		if (llm && !engine.features.includes(FEATURE_LLM_OPTIONS)) {
+			throw new QueueStopError(
+				"翻译服务版本太旧，不支持插件里的大模型配置。请更新服务端（git pull 后 uv sync）并重启 Obsidian",
+			);
+		}
+		const options = buildJobOptions(settings, {}, llm);
+
+		this.setDetail(item, "读取原文…");
+		const data = await this.app.vault.readBinary(file);
+		const sha256 = await sha256Hex(data);
+		check();
+
+		this.setDetail(item, "上传中…");
+		const jobId = await this.client.createJob(data, options);
+		this.jobIds.set(item.id, jobId);
+		if (item.cancelRequested) {
+			// 用户在上传期间点了取消：通知服务端
+			await this.client.cancelJob(jobId).catch(() => undefined);
+			throw new ItemCancelledError();
+		}
+
+		const final = await pollJob({
+			fetchStatus: () => this.client.getJob(jobId),
+			sleep: (ms) => this.sleep(ms),
+			onUpdate: (s) => this.setDetail(item, formatProgress(s)),
+			isCancelled: () => item.cancelRequested || this.disposed,
+			intervalMs: POLL_INTERVAL_MS,
+		});
+		if (final.state === "cancelled") throw new ItemCancelledError();
+		if (final.state !== "done") throw new Error(final.error ?? "服务端未给出原因");
+
+		this.setDetail(item, "下载译文…");
+		const files: Partial<Record<OutputKind, ArrayBuffer>> = {};
+		const available = final.outputs ?? options.outputs;
+		for (const kind of options.outputs) {
+			if (!available.includes(kind)) continue;
+			files[kind] = await this.client.downloadOutput(jobId, kind);
+			check();
+		}
+		if (!files.mono && !files.dual) throw new Error("服务没有返回任何译文");
+
+		this.setDetail(item, "写入仓库…");
+		await this.store.save({
+			source: file,
+			sourceSha256: sha256,
+			langIn: options.lang_in,
+			langOut: options.lang_out,
+			files,
+			// manifest 只记配置名，不记密钥
+			profile: llm?.name ?? options.profile,
+			pages: options.pages,
+			engine,
+		});
 	}
 
 	/**
@@ -158,52 +274,22 @@ export class TranslationJobs {
 	}
 
 	/** 连接服务（必要时自动启动）；被取消时返回 null */
-	private connect(job: ActiveJob, settings: BabelReaderSettings): Promise<HealthInfo | null> {
+	private connect(item: TranslationItem, settings: BabelReaderSettings): Promise<HealthInfo | null> {
 		return this.launcher.connect(
 			{
 				serverUrl: settings.serverUrl,
 				serverDir: settings.serverDir,
 				autoStart: settings.autoStartServer,
 			},
-			() => job.cancelled,
-			() => this.showStatus("启动翻译服务…"),
+			() => item.cancelRequested || this.disposed,
+			() => this.setDetail(item, "启动翻译服务…"),
 		);
 	}
 
-	async cancel(): Promise<void> {
-		const job = this.active;
-		if (!job || job.cancelled) return;
-		job.cancelled = true;
-		this.active = null;
-		this.hideStatus();
-		if (job.jobId) {
-			try {
-				await this.client.cancelJob(job.jobId);
-			} catch (err) {
-				console.warn("[babel-reader] 通知服务取消失败", err);
-			}
-		}
-		new Notice(`已取消「${job.file.basename}」的翻译`);
-	}
-
-	/** 插件卸载时调用：停止轮询，并尽力通知服务端取消 */
-	dispose(): void {
-		for (const t of this.timers) window.clearTimeout(t);
-		this.timers.clear();
-		const job = this.active;
-		if (job) {
-			job.cancelled = true;
-			this.active = null;
-			if (job.jobId) void this.client.cancelJob(job.jobId).catch(() => undefined);
-		}
-	}
-
-	private reportUnfinished(file: TFile, status: JobStatus): void {
-		if (status.state === "cancelled") {
-			new Notice(`「${file.basename}」的翻译已在服务端取消`);
-		} else {
-			new Notice(`翻译失败：${status.error ?? "服务端未给出原因"}`, 10000);
-		}
+	private setDetail(item: TranslationItem, text: string): void {
+		item.detail = text;
+		this.showStatus(item);
+		this.emitChange();
 	}
 
 	private sleep(ms: number): Promise<void> {
@@ -216,10 +302,12 @@ export class TranslationJobs {
 		});
 	}
 
-	private showStatus(text: string): void {
-		const name = this.active?.file.basename ?? "";
-		this.statusEl.setText(`翻译 ${name}：${text}`);
-		this.statusEl.setAttr("aria-label", "点击取消翻译");
+	private showStatus(item: TranslationItem): void {
+		if (this.disposed) return;
+		const { index, total } = this.queue.position(item);
+		const counter = total > 1 ? ` ${index}/${total}` : "";
+		this.statusEl.setText(`翻译${counter} ${item.payload.basename}：${item.detail}`);
+		this.statusEl.setAttr("aria-label", "点击查看翻译队列");
 		this.statusEl.removeClass("babel-reader-hidden");
 	}
 

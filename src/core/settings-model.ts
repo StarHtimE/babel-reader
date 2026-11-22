@@ -59,6 +59,11 @@ export function activeLlmProfile(settings: BabelReaderSettings): LlmProfile | nu
 	return settings.llmProfiles.find((p) => p.id === settings.llmProfileId) ?? null;
 }
 
+/** 实际使用的目标语言：没填时用默认值 */
+export function langOutOf(settings: BabelReaderSettings): string {
+	return settings.langOut.trim() || DEFAULT_SETTINGS.langOut;
+}
+
 export function requestedOutputs(settings: BabelReaderSettings): OutputKind[] {
 	return settings.generateDual ? ["mono", "dual"] : ["mono"];
 }
@@ -70,7 +75,7 @@ export function buildJobOptions(
 ): JobOptions {
 	return {
 		lang_in: settings.langIn.trim() || DEFAULT_SETTINGS.langIn,
-		lang_out: settings.langOut.trim() || DEFAULT_SETTINGS.langOut,
+		lang_out: langOutOf(settings),
 		profile: llm ? null : settings.profile.trim() || null,
 		llm,
 		pages: overrides.pages ?? null,
