@@ -31,6 +31,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 │   ├── jobs/           # 任务队列、进度、取消
 │   ├── launcher/       # 桌面端按需启动本机服务（唯一使用 Node 模块的地方）
 │   ├── rename/         # 按论文标题重命名：用 pdf.js 读首页、确认弹窗
+│   ├── glossary/       # 术语表笔记：合并后随任务提交，自动抽取的术语写回「待审核」
 │   └── view/           # PDF 视图头部按钮、模式切换、读当前页号
 ├── tests/              # vitest；主要覆盖 src/core
 └── server/             # Python 翻译服务（AGPL-3.0，单独的 LICENSE）
@@ -115,12 +116,12 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | `{ok, server_version, pdf2zh_next_version, babeldoc_version, features}`；`features` 列出可选功能，含 `"llm"` 表示接受 `options.llm`（旧版服务端没有此字段） |
+| GET | `/health` | `{ok, server_version, pdf2zh_next_version, babeldoc_version, features}`；`features` 列出可选功能，含 `"llm"` 表示接受 `options.llm`，含 `"glossary"` 表示接受 `options.auto_extract_glossary` 并返回自动抽取的术语（旧版服务端没有此字段） |
 | GET | `/profiles` | `{profiles: [名称, ...]}`（不含 key） |
 | POST | `/jobs` | `multipart/form-data`：`file`（PDF）+ `options`（JSON 字符串）→ `{job_id}` |
-| GET | `/jobs/{id}` | `{state, stage, stage_progress, overall_progress, error?, outputs?}`；`outputs` 只在 `done` 时出现，为种类列表如 `["mono","dual"]` |
+| GET | `/jobs/{id}` | `{state, stage, stage_progress, overall_progress, error?, outputs?, extras?}`；`outputs` 只在 `done` 时出现，为 PDF 种类列表如 `["mono","dual"]`；`extras` 同时出现，列出额外结果如 `["glossary"]`（单独列出，旧版插件只认得 mono / dual） |
 | DELETE | `/jobs/{id}` | 取消；运行中的任务通过 cancel 对应的 asyncio task 中止；已结束的任务则丢弃其结果文件 |
-| GET | `/jobs/{id}/files/{kind}` | `kind` 为 `mono` 或 `dual`，返回 PDF 字节 |
+| GET | `/jobs/{id}/files/{kind}` | `kind` 为 `mono` 或 `dual` 时返回 PDF 字节；为 `glossary` 时返回自动抽取的术语 CSV（`source,target,tgt_lng`） |
 
 - `state` 取值：`queued | running | done | error | cancelled`
 - 进度靠**轮询**（插件约每秒 `GET /jobs/{id}` 一次），不用 SSE / WebSocket：`requestUrl` 不支持流式响应，长连接在 Windows 上也容易出错
@@ -139,9 +140,12 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
   "outputs": ["mono", "dual"],
   "dual_translate_first": false,
   "ignore_cache": false,
-  "glossary_csv": null
+  "glossary_csv": null,
+  "auto_extract_glossary": true
 }
 ```
+
+- `glossary_csv`：插件把术语表笔记合并后转成的 CSV（`source,target,tgt_lng`）；`auto_extract_glossary` 映射到上游的 `no_auto_extract_glossary`（取反）
 
 服务端负责把 `options` 映射到 pdf2zh_next 的 `SettingsModel`，并固定使用无水印输出。
 
@@ -211,6 +215,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 - `do_translate_async_stream(settings, file)` 产出 `progress_start / progress_update / progress_end / finish / error` 事件；进度字段 `stage, stage_progress, overall_progress`（`progress_start` / `progress_end` 没有 `overall_progress`）；完成事件 `event["translate_result"].mono_pdf_path / dual_pdf_path`
 - 翻译在子进程里跑；取消正在 await 该生成器的 asyncio task 即可，生成器的 `finally` 会结束子进程
 - warmup 入口：`babeldoc.assets.assets.warmup()`
+- 术语表：`Glossary.from_csv` 要求列 `source,target`，`tgt_lng` 可选（与 `lang_out` 比较时忽略大小写、`-` 当 `_`）。自动抽取默认开启（`translation.no_auto_extract_glossary=False`，主引擎支持 LLM 时用同一个引擎）；pdf2zh_next 的 `create_babeldoc_config` 不传 `save_auto_extracted_glossary`，所以用 BabelDOC 的默认值 `True`：抽到的术语以 utf-8-sig 写成 `<basename>.<lang_out>.glossary.csv`，路径在 `translate_result.auto_extracted_glossary_path`
 - 并发：每个任务一个子进程，理论上可并发；目前仍串行：插件一次只提交一篇，其余在插件的队列里等（`src/core/queue.ts`）
 - 读 PDF 首页：公开 API `loadPdfJs()`（Obsidian 内置 pdf.js，移动端可用），返回类型是 `any`，在 `src/rename/read-first-page.ts` 里逐个方法做类型守卫；文本项 `{str, transform, width}`，字高取 `hypot(transform[2], transform[3])`，`transform[0] > 0 且 transform[1] ≈ 0` 才是横排文字（arXiv 左侧编号是旋转的）；元数据 `getMetadata()` → `info.Title` 与 XMP `metadata.get("dc:title")`（见过 XMP 把标题重复两遍）
 - Obsidian PDF 视图页号：`view.viewer.child.pdfViewer.pdfViewer.currentPageNumber`（1 起），回退 `view.getState().page`；跳页用公开的 `leaf.openFile(file, { eState: { subpath: "#page=N" } })`（参考 PDF++ `src/typings.d.ts`）
@@ -218,5 +223,5 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 ## 路线图
 
 - **v0.1**（已发布 0.1.0、0.1.1）：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译或测试连接时按需自动启动本机服务（默认开启）；在插件设置里配置大模型（API key 存 Obsidian 密钥存储，minAppVersion 1.11.4）
-- **v0.2**：指定页翻译（已完成；命令和文件右键菜单，结果替换已有译文、不合并）；右键批量翻译与队列（已完成；队列在插件端，状态栏 + 队列弹窗；配置或连接错误停下整个队列，单篇失败不影响后面）；批量「按论文标题重命名」（已完成；一个列表弹窗统一确认）；过期检测（已完成）；重命名 / 删除跟踪（已完成）；按论文标题重命名：首页文字 + PDF 元数据（已完成；以后可加「让大模型识别」作为补充）；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
+- **v0.2**：术语表（已完成；Markdown 笔记表格，全局 + 文件夹术语表，自动抽取的术语过滤后按论文分组追加到「待审核」小节、不自动生效，写回可单独关闭）；指定页翻译（已完成；命令和文件右键菜单，结果替换已有译文、不合并）；右键批量翻译与队列（已完成；队列在插件端，状态栏 + 队列弹窗；配置或连接错误停下整个队列，单篇失败不影响后面）；批量「按论文标题重命名」（已完成；一个列表弹窗统一确认）；过期检测（已完成）；重命名 / 删除跟踪（已完成）；按论文标题重命名：首页文字 + PDF 元数据（已完成；以后可加「让大模型识别」作为补充）；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
 - **v0.3**：原文与译文双 pane 同步滚动；移动端裁剪阅读；局域网远程服务（令牌鉴权）

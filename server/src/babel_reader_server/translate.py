@@ -25,7 +25,7 @@ from pdf2zh_next.config.model import PDFSettings, TranslationSettings
 from pdf2zh_next.config.translate_engine_model import OpenAISettings
 
 from .config import Profile
-from .jobs import JobOptions, OutputKind
+from .jobs import FileKind, JobOptions, OutputKind
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ def build_settings(
             qps=profile.qps,
             ignore_cache=options.ignore_cache,
             glossaries=str(glossary_path) if glossary_path else None,
+            no_auto_extract_glossary=not options.auto_extract_glossary,
         ),
         pdf=PDFSettings(
             pages=options.pages,
@@ -121,8 +122,11 @@ async def run_translation(
     profile: Profile,
     on_progress: ProgressCallback,
     glossary_path: Path | None = None,
-) -> dict[OutputKind, Path]:
-    """执行一次翻译，返回 {种类: 结果文件路径}。被取消时抛出 CancelledError。"""
+) -> dict[FileKind, Path]:
+    """执行一次翻译，返回 {种类: 结果文件路径}。被取消时抛出 CancelledError。
+
+    除了 PDF，上游自动抽取的术语（BabelDOC 默认保存为 CSV）有就一并返回，种类为 glossary。
+    """
     settings = build_settings(options, profile, output_dir, glossary_path)
     stream = do_translate_async_stream(settings, input_path)
     async with contextlib.aclosing(stream):
@@ -139,12 +143,15 @@ async def run_translation(
                 raise TranslationFailed(str(event.get("error") or "未知错误"))
             elif etype == "finish":
                 result = event.get("translate_result")
-                outputs: dict[OutputKind, Path] = {}
+                outputs: dict[FileKind, Path] = {}
                 for kind in options.outputs:
                     path = _result_path(result, kind)
                     if path is None or not path.is_file():
                         raise TranslationFailed(f"翻译完成但找不到 {kind} 结果文件")
                     outputs[kind] = path
+                glossary = getattr(result, "auto_extracted_glossary_path", None)
+                if options.auto_extract_glossary and glossary and Path(glossary).is_file():
+                    outputs["glossary"] = Path(glossary)
                 return outputs
     raise TranslationFailed("翻译流程意外结束，没有收到完成事件")
 

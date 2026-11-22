@@ -33,6 +33,8 @@ export interface SaveTranslationParams {
 	files: Partial<Record<OutputKind, ArrayBuffer>>;
 	profile: string | null;
 	pages: string | null;
+	/** 用到的术语表笔记，逗号分隔；没有时为 null */
+	glossary: string | null;
 	engine: HealthInfo;
 }
 
@@ -370,7 +372,7 @@ export class TranslationStore {
 			source: { path: params.source.path, sha256: params.sourceSha256 },
 			lang: { in: params.langIn, out: params.langOut },
 			outputs,
-			options: { pages: params.pages, profile: params.profile, glossary: null },
+			options: { pages: params.pages, profile: params.profile, glossary: params.glossary },
 			engine: {
 				server: params.engine.server_version,
 				pdf2zh_next: params.engine.pdf2zh_next_version,

@@ -7,8 +7,9 @@ import { describePageRanges } from "../core/page";
 import { PollCancelledError, pollJob } from "../core/poll";
 import { formatProgress } from "../core/progress";
 import { JobQueue, summaryText, type QueueItem } from "../core/queue";
-import { activeLlmProfile, buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
-import { FEATURE_LLM_OPTIONS, type HealthInfo, type OutputKind } from "../core/types";
+import { activeLlmProfile, buildJobOptions, langOutOf, type BabelReaderSettings } from "../core/settings-model";
+import { FEATURE_GLOSSARY, FEATURE_LLM_OPTIONS, type HealthInfo, type OutputKind } from "../core/types";
+import type { GlossaryService } from "../glossary/glossary-service";
 import type { ServerLauncher } from "../launcher/server-launcher";
 import type { StaleChecker } from "../store/stale-checker";
 import type { TranslationStore } from "../store/translation-store";
@@ -53,6 +54,7 @@ export class TranslationJobs {
 		private readonly store: TranslationStore,
 		private readonly launcher: ServerLauncher,
 		private readonly stale: StaleChecker,
+		private readonly glossary: GlossaryService,
 		private readonly getSettings: () => BabelReaderSettings,
 		private readonly statusEl: HTMLElement,
 	) {
@@ -163,11 +165,13 @@ export class TranslationJobs {
 		const file = item.payload;
 		const single = this.queue.list().length === 1;
 		try {
-			await this.translateOne(item);
-			this.queue.finish(item, "done", "完成");
+			const newTerms = await this.translateOne(item);
+			const terms = newTerms ? `，${newTerms.count} 个新术语已加入「${newTerms.note}」的待审核` : "";
+			this.queue.finish(item, "done", `完成${terms}`);
 			if (single) {
 				const pages = this.pagesOf(item);
-				new Notice(`「${file.basename}」${pages === null ? "" : describePageRanges(pages)}翻译完成`);
+				const range = pages === null ? "" : describePageRanges(pages);
+				new Notice(`「${file.basename}」${range}翻译完成${terms}`, terms ? 8000 : 5000);
 			}
 		} catch (err) {
 			if (err instanceof ItemCancelledError || err instanceof PollCancelledError || item.cancelRequested) {
@@ -189,7 +193,8 @@ export class TranslationJobs {
 		}
 	}
 
-	private async translateOne(item: TranslationItem): Promise<void> {
+	/** 返回写回术语表的新术语（没有时为 null） */
+	private async translateOne(item: TranslationItem): Promise<{ count: number; note: string } | null> {
 		const file = item.payload;
 		const settings = this.getSettings();
 		const check = () => {
@@ -219,7 +224,8 @@ export class TranslationJobs {
 				"翻译服务版本太旧，不支持插件里的大模型配置。请更新服务端（git pull 后 uv sync）并重启 Obsidian",
 			);
 		}
-		const options = buildJobOptions(settings, { pages: this.pagesOf(item) }, llm);
+		const glossary = await this.glossary.forJob(file, langOutOf(settings));
+		const options = buildJobOptions(settings, { pages: this.pagesOf(item), glossary_csv: glossary.csv }, llm);
 
 		this.setDetail(item, "读取原文…");
 		const stamp = { mtime: file.stat.mtime, size: file.stat.size };
@@ -267,8 +273,24 @@ export class TranslationJobs {
 			// manifest 只记配置名，不记密钥
 			profile: llm?.name ?? options.profile,
 			pages: options.pages,
+			glossary: glossary.notes.length > 0 ? glossary.notes.join(", ") : null,
 			engine,
 		});
+
+		// 自动抽取的术语：追加到术语表的「待审核」小节；失败不影响这次翻译
+		const path = glossary.writeBackPath;
+		if (!options.auto_extract_glossary || !settings.writeBackGlossary || !path) return null;
+		if (!engine.features.includes(FEATURE_GLOSSARY)) return null;
+		if (!final.extras?.includes("glossary")) return null;
+		try {
+			this.setDetail(item, "整理术语…");
+			const count = await this.glossary.writeBack(path, await this.client.downloadGlossary(jobId), file);
+			const note = (path.split("/").pop() ?? path).replace(/\.md$/i, "");
+			return count > 0 ? { count, note } : null;
+		} catch (err) {
+			console.warn("[babel-reader] 写回自动抽取的术语失败", err);
+			return null;
+		}
 	}
 
 	/**

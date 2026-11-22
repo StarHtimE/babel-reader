@@ -87,7 +87,7 @@ def test_health_and_profiles(tmp_path):
             "server_version": "0.1.1",
             "pdf2zh_next_version": "2.10.2",
             "babeldoc_version": "0.7.1",
-            "features": ["llm"],
+            "features": ["llm", "glossary"],
         }
         p = c.get("/v1/profiles").json()
         assert p == {"profiles": ["deepseek", "local"]}
@@ -314,3 +314,40 @@ def test_plugin_llm_validation(tmp_path, patch):
         assert r.json()["detail"].startswith("options.llm.")
         # 校验错误里也不回显密钥
         assert "sk-from-plugin" not in r.text
+
+
+class GlossaryTranslator(FakeTranslator):
+    """在 PDF 之外还返回自动抽取的术语"""
+
+    async def __call__(self, input_path, output_dir, options, profile, on_progress, glossary_path):
+        out = await super().__call__(
+            input_path, output_dir, options, profile, on_progress, glossary_path
+        )
+        g = Path(output_dir) / "source.zh.glossary.csv"
+        g.write_text("source,target,tgt_lng\nspeckle,相干斑,zh\n", encoding="utf-8-sig")
+        out["glossary"] = g
+        return out
+
+
+def test_auto_extracted_glossary_is_downloadable(tmp_path):
+    fake = GlossaryTranslator()
+    with make_client(tmp_path, fake) as c:
+        assert "glossary" in c.get("/v1/health").json()["features"]
+        job_id = submit(c, {"auto_extract_glossary": True}).json()["job_id"]
+        st = wait_state(c, job_id, {"done"})
+        # PDF 种类不变，术语单独列在 extras 里
+        assert st["outputs"] == ["mono", "dual"]
+        assert st["extras"] == ["glossary"]
+        assert fake.calls[0]["options"].auto_extract_glossary is True
+        r = c.get(f"/v1/jobs/{job_id}/files/glossary")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        assert "相干斑" in r.content.decode("utf-8-sig")
+
+
+def test_no_extras_without_glossary(tmp_path):
+    with make_client(tmp_path, FakeTranslator()) as c:
+        job_id = submit(c, {"auto_extract_glossary": False}).json()["job_id"]
+        st = wait_state(c, job_id, {"done"})
+        assert st["extras"] == []
+        assert c.get(f"/v1/jobs/{job_id}/files/glossary").status_code == 404

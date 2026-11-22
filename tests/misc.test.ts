@@ -51,6 +51,7 @@ describe("settings", () => {
 			dual_translate_first: false,
 			ignore_cache: false,
 			glossary_csv: null,
+			auto_extract_glossary: true,
 		});
 		expect(buildJobOptions(DEFAULT_SETTINGS).outputs).toEqual(["mono", "dual"]);
 	});
@@ -64,5 +65,13 @@ describe("progress", () => {
 		expect(
 			formatProgress({ state: "running", stage: "Translate", stage_progress: 10, overall_progress: 42.9 }),
 		).toBe("42% · Translate");
+	});
+});
+
+describe("术语表参数", () => {
+	it("带上术语表 CSV 和自动抽取开关", () => {
+		const o = buildJobOptions({ ...DEFAULT_SETTINGS, autoExtractGlossary: false }, { glossary_csv: "source,target\n" });
+		expect(o.glossary_csv).toBe("source,target\n");
+		expect(o.auto_extract_glossary).toBe(false);
 	});
 });

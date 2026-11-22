@@ -100,5 +100,9 @@ export function parseJobStatus(data: unknown): JobStatus {
 		}
 		status.outputs = outputs;
 	}
+	// 额外结果：只保留字符串，未知种类由调用方忽略
+	if (Array.isArray(obj.extras)) {
+		status.extras = obj.extras.filter((x): x is string => typeof x === "string");
+	}
 	return status;
 }

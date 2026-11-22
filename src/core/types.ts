@@ -24,6 +24,9 @@ export interface HealthInfo {
 /** 服务端接受插件提交的大模型配置（options.llm） */
 export const FEATURE_LLM_OPTIONS = "llm";
 
+/** 服务端支持 options.auto_extract_glossary，并会返回自动抽取的术语（extras 里的 "glossary"） */
+export const FEATURE_GLOSSARY = "glossary";
+
 export interface JobStatus {
 	state: JobState;
 	stage: string | null;
@@ -31,6 +34,8 @@ export interface JobStatus {
 	overall_progress: number;
 	error?: string;
 	outputs?: OutputKind[];
+	/** 完成时的额外结果，如 "glossary"（自动抽取的术语 CSV）；旧版服务端没有 */
+	extras?: string[];
 }
 
 /** POST /v1/jobs 的 options 字段 */
@@ -46,6 +51,8 @@ export interface JobOptions {
 	dual_translate_first: boolean;
 	ignore_cache: boolean;
 	glossary_csv: string | null;
+	/** 让上游先抽取术语、统一译法；旧版服务端忽略此字段 */
+	auto_extract_glossary: boolean;
 }
 
 export function isTerminalState(state: JobState): boolean {

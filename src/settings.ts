@@ -165,6 +165,8 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		this.displayGlossary(containerEl);
+
 		new Setting(containerEl).setName("存储").setHeading();
 
 		new Setting(containerEl)
@@ -223,6 +225,66 @@ export class BabelReaderSettingTab extends PluginSettingTab {
 	}
 
 	/** 「大模型」分组：选用哪个配置，以及插件里的配置列表 */
+	private displayGlossary(containerEl: HTMLElement): void {
+		const s = this.host.settings;
+		new Setting(containerEl).setName("术语表").setHeading();
+
+		new Setting(containerEl)
+			.setName("全局术语表")
+			.setDesc(
+				"一篇笔记的路径，如「术语表.md」。笔记里的表格（列为「原文 | 译文」）会在翻译时交给大模型，统一译法。留空表示没有全局术语表。",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder("术语表.md")
+					.setValue(s.glossaryPath)
+					.onChange(async (v) => {
+						s.glossaryPath = v.trim();
+						await this.host.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("文件夹术语表的名字")
+			.setDesc(
+				"原文所在文件夹及其上级文件夹里，叫这个名字的笔记也会生效，离原文越近优先级越高。适合不同课题用不同译法。留空则不用。",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder("术语表")
+					.setValue(s.folderGlossaryName)
+					.onChange(async (v) => {
+						s.folderGlossaryName = v.trim().replace(/\.md$/i, "");
+						await this.host.saveSettings();
+					}),
+			);
+
+		let writeBack: Setting | null = null;
+		new Setting(containerEl)
+			.setName("自动抽取术语")
+			.setDesc("翻译前先让大模型从论文里抽取术语，统一这次翻译的译法（会多花一些调用）。")
+			.addToggle((t) =>
+				t.setValue(s.autoExtractGlossary).onChange(async (v) => {
+					s.autoExtractGlossary = v;
+					writeBack?.setDisabled(!v);
+					await this.host.saveSettings();
+				}),
+			);
+
+		writeBack = new Setting(containerEl)
+			.setName("写回待审核")
+			.setDesc(
+				"把自动抽取的新术语追加到离原文最近的术语表（没有时为全局术语表）末尾的「待审核」小节，按论文分组；挪到正式表格后才生效。原文和译文相同的（人名、缩写等）、单复数重复的不写。需要开着「自动抽取术语」。",
+			)
+			.addToggle((t) =>
+				t.setValue(s.writeBackGlossary).onChange(async (v) => {
+					s.writeBackGlossary = v;
+					await this.host.saveSettings();
+				}),
+			)
+			.setDisabled(!s.autoExtractGlossary);
+	}
+
 	private displayLlm(containerEl: HTMLElement): void {
 		const s = this.host.settings;
 		new Setting(containerEl).setName("大模型").setHeading();

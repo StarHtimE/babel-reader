@@ -7,6 +7,7 @@ import { TranslationJobs } from "./jobs/translation-jobs";
 import { ServerLauncher } from "./launcher/server-launcher";
 import { TitleRenamer } from "./rename/title-renamer";
 import { BabelReaderSettingTab } from "./settings";
+import { GlossaryService } from "./glossary/glossary-service";
 import { StaleChecker } from "./store/stale-checker";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
@@ -51,6 +52,7 @@ export default class BabelReaderPlugin extends Plugin {
 			this.store,
 			this.launcher,
 			stale,
+			new GlossaryService(this.app, () => this.settings),
 			() => this.settings,
 			statusEl,
 		);

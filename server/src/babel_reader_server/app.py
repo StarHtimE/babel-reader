@@ -16,14 +16,14 @@ from pydantic import ValidationError
 
 from . import __version__
 from .config import ServerConfig
-from .jobs import Job, JobManager, JobOptions, JobState, OutputKind
+from .jobs import FileKind, Job, JobManager, JobOptions, JobState
 
 log = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
 
 #: (input_path, output_dir, options, profile, on_progress, glossary_path) → 结果
-Translator = Callable[..., Awaitable[dict[OutputKind, Path]]]
+Translator = Callable[..., Awaitable[dict[FileKind, Path]]]
 VersionsProvider = Callable[[], tuple[str, str]]
 
 
@@ -50,7 +50,7 @@ def create_app(
 
     async def runner(
         job: Job, on_progress: Callable[[str | None, float, float | None], None]
-    ) -> dict[OutputKind, Path]:
+    ) -> dict[FileKind, Path]:
         return await run_translation(
             job.input_path,
             job.output_dir,
@@ -105,7 +105,7 @@ def create_app(
             "pdf2zh_next_version": pdf2zh_version,
             "babeldoc_version": babeldoc_version,
             # 可选功能；插件据此判断能否提交 options.llm（旧版服务端会忽略它）
-            "features": ["llm"],
+            "features": ["llm", "glossary"],
         }
 
     @router.get("/profiles")
@@ -171,14 +171,16 @@ def create_app(
 
     @router.get("/jobs/{job_id}/files/{kind}")
     async def get_file(job_id: str, kind: str) -> FileResponse:
-        if kind not in ("mono", "dual"):
-            raise HTTPException(status_code=404, detail="kind 只能是 mono 或 dual")
+        if kind not in ("mono", "dual", "glossary"):
+            raise HTTPException(status_code=404, detail="kind 只能是 mono、dual 或 glossary")
         job = get_job_or_404(job_id)
         if job.state is not JobState.DONE:
             raise HTTPException(status_code=409, detail=f"任务尚未完成（{job.state.value}）")
         path = job.outputs.get(kind)  # type: ignore[call-overload]
         if path is None or not path.is_file():
             raise HTTPException(status_code=404, detail=f"没有 {kind} 结果")
+        if kind == "glossary":
+            return FileResponse(path, media_type="text/csv; charset=utf-8", filename="glossary.csv")
         return FileResponse(path, media_type="application/pdf", filename=f"{kind}.pdf")
 
     app.include_router(router)

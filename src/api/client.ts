@@ -67,6 +67,15 @@ export class ServerClient {
 		return buf;
 	}
 
+	/** 自动抽取的术语（CSV 文本）；TextDecoder 默认会去掉开头的 BOM */
+	async downloadGlossary(jobId: string): Promise<string> {
+		const res = await this.request({
+			method: "GET",
+			path: `/jobs/${encodeURIComponent(jobId)}/files/glossary`,
+		});
+		return new TextDecoder("utf-8").decode(res.arrayBuffer);
+	}
+
 	private async request(opts: {
 		method: string;
 		path: string;

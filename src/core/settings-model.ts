@@ -20,6 +20,14 @@ export interface BabelReaderSettings {
 	autoStartServer: boolean;
 	/** 服务目录：本项目的 server 文件夹（仓库外的系统路径） */
 	serverDir: string;
+	/** 全局术语表笔记的路径；空字符串表示没有 */
+	glossaryPath: string;
+	/** 文件夹术语表的笔记名（不含 .md）：原文所在文件夹及其上级里这个名字的笔记也会生效 */
+	folderGlossaryName: string;
+	/** 让上游先从论文里抽取术语、统一这次翻译的译法 */
+	autoExtractGlossary: boolean;
+	/** 把自动抽取的新术语（过滤后）追加到术语表的「待审核」小节；需要开着自动抽取 */
+	writeBackGlossary: boolean;
 }
 
 export const DEFAULT_SETTINGS: Readonly<BabelReaderSettings> = {
@@ -35,6 +43,10 @@ export const DEFAULT_SETTINGS: Readonly<BabelReaderSettings> = {
 	dualTranslateFirst: false,
 	autoStartServer: true,
 	serverDir: "",
+	glossaryPath: "",
+	folderGlossaryName: "术语表",
+	autoExtractGlossary: true,
+	writeBackGlossary: true,
 };
 
 /** 把 loadData() 读到的任意数据合并成完整设置，类型不对的字段回退默认值 */
@@ -70,7 +82,7 @@ export function requestedOutputs(settings: BabelReaderSettings): OutputKind[] {
 
 export function buildJobOptions(
 	settings: BabelReaderSettings,
-	overrides: Partial<Pick<JobOptions, "pages" | "ignore_cache">> = {},
+	overrides: Partial<Pick<JobOptions, "pages" | "ignore_cache" | "glossary_csv">> = {},
 	llm: LlmJobOptions | null = null,
 ): JobOptions {
 	return {
@@ -82,6 +94,7 @@ export function buildJobOptions(
 		outputs: requestedOutputs(settings),
 		dual_translate_first: settings.dualTranslateFirst,
 		ignore_cache: overrides.ignore_cache ?? false,
-		glossary_csv: null,
+		glossary_csv: overrides.glossary_csv ?? null,
+		auto_extract_glossary: settings.autoExtractGlossary,
 	};
 }

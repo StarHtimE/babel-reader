@@ -222,3 +222,24 @@ def test_engine_versions():
     pdf2zh, babeldoc = translate.engine_versions()
     assert pdf2zh != "unknown"
     assert babeldoc != "unknown"
+
+
+def test_build_settings_auto_extract_glossary_switch(tmp_path: Path):
+    on = translate.build_settings(JobOptions(), PROFILE, tmp_path)
+    assert on.translation.no_auto_extract_glossary is False
+    off = translate.build_settings(JobOptions(auto_extract_glossary=False), PROFILE, tmp_path)
+    assert off.translation.no_auto_extract_glossary is True
+
+
+def test_run_translation_returns_auto_extracted_glossary(tmp_path, monkeypatch):
+    mono = _pdf(tmp_path / "m.pdf")
+    g = tmp_path / "m.zh.glossary.csv"
+    g.write_text("source,target,tgt_lng\nspeckle,相干斑,zh\n", encoding="utf-8-sig")
+    result = SimpleNamespace(mono_pdf_path=mono, auto_extracted_glossary_path=g)
+    _install_fake_stream(monkeypatch, [{"type": "finish", "translate_result": result}])
+    run = lambda opts: asyncio.run(  # noqa: E731
+        translate.run_translation(tmp_path / "in.pdf", tmp_path, opts, PROFILE, lambda *a: None)
+    )
+    assert run(JobOptions(outputs=["mono"])) == {"mono": mono, "glossary": g}
+    # 关闭抽取时即使上游留下了文件也不返回
+    assert run(JobOptions(outputs=["mono"], auto_extract_glossary=False)) == {"mono": mono}

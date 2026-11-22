@@ -22,6 +22,8 @@ from .config import Profile
 log = logging.getLogger(__name__)
 
 OutputKind = Literal["mono", "dual"]
+#: 结果文件的种类：两种 PDF，加上上游自动抽取的术语（CSV，可能没有）
+FileKind = Literal["mono", "dual", "glossary"]
 
 _LANG_PATTERN = r"^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*$"
 _PAGES_PATTERN = r"^\s*\d*\s*-?\s*\d*\s*(,\s*\d*\s*-?\s*\d*\s*)*$"
@@ -74,6 +76,8 @@ class JobOptions(BaseModel):
     dual_translate_first: bool = False
     ignore_cache: bool = False
     glossary_csv: Annotated[str | None, Field(max_length=1_000_000)] = None
+    #: 让上游先用大模型抽取术语、统一译法（多花一些调用）；抽到的术语随结果返回
+    auto_extract_glossary: bool = True
 
     @field_validator("pages")
     @classmethod
@@ -119,10 +123,10 @@ class Job:
     stage_progress: float = 0.0
     overall_progress: float = 0.0
     error: str | None = None
-    outputs: dict[OutputKind, Path] = field(default_factory=dict)
+    outputs: dict[FileKind, Path] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
-    task: asyncio.Task[dict[OutputKind, Path]] | None = None
+    task: asyncio.Task[dict[FileKind, Path]] | None = None
 
     @property
     def output_dir(self) -> Path:
@@ -144,6 +148,8 @@ class Job:
             status["error"] = self.error
         if self.state is JobState.DONE:
             status["outputs"] = [k for k in ("mono", "dual") if k in self.outputs]
+            # 额外结果单独列出：旧版插件只认得 mono / dual
+            status["extras"] = [k for k in ("glossary",) if k in self.outputs]
         return status
 
     def update_progress(
@@ -161,7 +167,7 @@ class Job:
 
 #: 执行一个任务，返回 {种类: 结果文件}；通过回调报告进度
 Runner = Callable[
-    [Job, Callable[[str | None, float, float | None], None]], Awaitable[dict[OutputKind, Path]]
+    [Job, Callable[[str | None, float, float | None], None]], Awaitable[dict[FileKind, Path]]
 ]
 
 

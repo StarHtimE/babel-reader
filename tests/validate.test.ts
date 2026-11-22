@@ -73,3 +73,11 @@ describe("服务响应校验", () => {
 		).toThrow(ValidationError);
 	});
 });
+
+describe("任务状态的额外结果", () => {
+	it("extras 只保留字符串；旧版服务端没有这个字段", () => {
+		const base = { state: "done", stage: null, stage_progress: 100, overall_progress: 100 };
+		expect(parseJobStatus({ ...base, extras: ["glossary", 1] }).extras).toEqual(["glossary"]);
+		expect(parseJobStatus(base).extras).toBeUndefined();
+	});
+});
