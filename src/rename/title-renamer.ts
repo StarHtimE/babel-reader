@@ -1,16 +1,12 @@
 import { Modal, Notice, Setting, type App, type TAbstractFile, type TFile } from "obsidian";
 import { errorMessage } from "../core/errors";
 import { titleToFileName } from "../core/naming";
-import { suggestTitle, type TitleCandidate, type TitleSuggestion } from "../core/title";
+import { SOURCE_LABELS, suggestTitle, type TitleSuggestion } from "../core/title";
 import type { TranslationStore } from "../store/translation-store";
 import { BatchRenameModal, type BatchRenameRow } from "./batch-rename-modal";
 import { readFirstPage } from "./read-first-page";
 import { targetPathFor } from "./target-path";
 
-export const SOURCE_LABELS: Record<TitleCandidate["source"], string> = {
-	text: "首页文字",
-	metadata: "PDF 元数据",
-};
 
 /**
  * 「按论文标题重命名」：识别标题 → 弹窗确认（可修改）→ 用 fileManager.renameFile 改名。

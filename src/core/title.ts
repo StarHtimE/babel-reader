@@ -29,6 +29,12 @@ export interface PageText {
 
 export type TitleSource = "text" | "metadata";
 
+/** 界面上显示的候选来源 */
+export const SOURCE_LABELS: Record<TitleSource, string> = {
+	text: "首页文字",
+	metadata: "PDF 元数据",
+};
+
 export interface TitleCandidate {
 	title: string;
 	source: TitleSource;
@@ -72,13 +78,21 @@ function needsSpace(left: string, right: string): boolean {
 	return !(isCjk(left[left.length - 1]) || isCjk(right[0]));
 }
 
-function joinRuns(runs: TextRun[]): string {
+/**
+ * 小型大写字母（small caps）：标题里每个词的首字母用大字号，其余字母用小一号的大写。
+ * 和大字号片段在同一行、字号明显更小的全大写片段，按小写处理。
+ */
+function isSmallCaps(run: TextRun, lineSize: number): boolean {
+	return run.size < 0.9 * lineSize && letterCount(run.text) > 0 && run.text === run.text.toUpperCase();
+}
+
+function joinRuns(runs: TextRun[], lineSize: number): string {
 	const sorted = [...runs].sort((a, b) => a.x - b.x);
 	let out = "";
 	let prevEnd: number | null = null;
 	for (const r of sorted) {
 		if (prevEnd !== null && r.x - prevEnd > 0.15 * r.size && needsSpace(out, r.text)) out += " ";
-		out += r.text;
+		out += isSmallCaps(r, lineSize) ? r.text.toLowerCase() : r.text;
 		prevEnd = r.x + r.width;
 	}
 	return out.replace(/\s+/g, " ").trim();
@@ -88,23 +102,39 @@ function similarSize(a: number, b: number, tolerance: number): boolean {
 	return Math.min(a, b) / Math.max(a, b) >= 1 - tolerance;
 }
 
+interface LineGroup {
+	runs: TextRun[];
+	y: number;
+	size: number;
+	/** 最右一段的右端，判断相邻用 */
+	end: number;
+}
+
+/** 这一段文字是否属于这一行 */
+function belongsTo(g: LineGroup, r: TextRun): boolean {
+	const dy = Math.abs(g.y - r.y);
+	const small = Math.min(g.size, r.size);
+	if (dy <= 0.4 * small && similarSize(g.size, r.size, 0.2)) return true;
+	// small caps：基线严格对齐、紧挨着的小一号文字也并进来（上标的基线会抬高，不受影响）
+	return dy <= 0.15 * small && similarSize(g.size, r.size, 0.4) && r.x - g.end <= 1.5 * Math.max(g.size, r.size);
+}
+
 /** 把文字片段按基线和字号分成行，从上到下排列 */
 function groupLines(runs: TextRun[]): Line[] {
-	const groups: { runs: TextRun[]; y: number; size: number }[] = [];
+	const groups: LineGroup[] = [];
 	const sorted = [...runs].sort((a, b) => b.y - a.y || a.x - b.x);
 	for (const r of sorted) {
-		const g = groups.find(
-			(l) => Math.abs(l.y - r.y) <= 0.4 * Math.min(l.size, r.size) && similarSize(l.size, r.size, 0.2),
-		);
+		const g = groups.find((l) => belongsTo(l, r));
 		if (g) {
 			g.runs.push(r);
 			g.size = Math.max(g.size, r.size);
+			g.end = Math.max(g.end, r.x + r.width);
 		} else {
-			groups.push({ runs: [r], y: r.y, size: r.size });
+			groups.push({ runs: [r], y: r.y, size: r.size, end: r.x + r.width });
 		}
 	}
 	return groups
-		.map((g) => ({ ...g, text: joinRuns(g.runs) }))
+		.map((g) => ({ runs: g.runs, y: g.y, size: g.size, text: joinRuns(g.runs, g.size) }))
 		.filter((l) => l.text !== "")
 		.sort((a, b) => b.y - a.y);
 }
@@ -122,11 +152,34 @@ const NOT_TITLE_LINE = [
 	/^((original|research)\s+(research|paper)|research)$/i,
 	/^(open access|preprint|accepted manuscript|author manuscript)$/i,
 	/^[\d\s.,:;()-]+$/,
+	// 期刊名（Elsevier 等版式的页眉里，期刊名的字号可能比标题还大）
+	/\bjournal of\b|^(ieee|acm)\s+transactions\b/i,
 ];
 
 function isTitleLike(text: string): boolean {
 	if (letterCount(text) < MIN_LETTERS) return false;
 	return !NOT_TITLE_LINE.some((re) => re.test(text));
+}
+
+/**
+ * Elsevier 版式的页眉：「Contents lists available at ScienceDirect」/ 期刊名 / 「journal homepage: …」。
+ * 夹在这两行之间的行是期刊名，即使不含 Journal 字样（如 Remote Sensing of Environment）。
+ */
+const MASTHEAD_ABOVE = /contents lists available/i;
+const MASTHEAD_BELOW = /journal homepage/i;
+
+function mastheadLines(lines: Line[]): Set<number> {
+	const out = new Set<number>();
+	for (let i = 0; i < lines.length; i++) {
+		if (!MASTHEAD_ABOVE.test(lines[i]?.text ?? "")) continue;
+		for (let j = i + 1; j < lines.length && j <= i + 4; j++) {
+			if (MASTHEAD_BELOW.test(lines[j]?.text ?? "")) {
+				for (let k = i + 1; k < j; k++) out.add(k);
+				break;
+			}
+		}
+	}
+	return out;
 }
 
 /** 合并跨行的标题：处理行尾连字符 */
@@ -154,11 +207,11 @@ export function cleanTitle(raw: string): string {
 		.trim();
 }
 
-/** 从首页文字里找标题；找不到时返回 null */
-export function titleFromPage(page: PageText): string | null {
+/** 页面上方区域里的横排文字，按行从上到下 */
+function topLines(page: PageText): Line[] {
 	const [x0, y0, x1, y1] = page.view;
 	const height = y1 - y0;
-	if (!(height > 0) || !(x1 > x0)) return null;
+	if (!(height > 0) || !(x1 > x0)) return [];
 	const minY = y1 - height * TOP_FRACTION;
 	const runs = page.runs.filter(
 		(r) =>
@@ -170,16 +223,22 @@ export function titleFromPage(page: PageText): string | null {
 			r.x >= x0 - 1 &&
 			r.x <= x1,
 	);
-	const lines = groupLines(runs);
+	return groupLines(runs);
+}
+
+/** 从首页文字里找标题；找不到时返回 null */
+export function titleFromPage(page: PageText): string | null {
+	const lines = topLines(page);
+	const masthead = mastheadLines(lines);
 
 	// 字号从大到小尝试：最大的一行若是页眉之类，换下一个字号
 	const candidates = lines
 		.map((line, index) => ({ line, index }))
-		.filter(({ line }) => isTitleLike(line.text))
+		.filter(({ line, index }) => !masthead.has(index) && isTitleLike(line.text))
 		.sort((a, b) => b.line.size - a.line.size || b.line.y - a.line.y);
 
 	for (const { line, index } of candidates) {
-		const picked = collectTitleLines(lines, index, line.size);
+		const picked = collectTitleLines(lines, index, line.size).filter((l) => !masthead.has(lines.indexOf(l)));
 		const title = cleanTitle(joinLines(picked.map((l) => l.text)));
 		if (letterCount(title) >= MIN_LETTERS && title.length <= MAX_TITLE_LENGTH && isTitleLike(title)) {
 			return title;

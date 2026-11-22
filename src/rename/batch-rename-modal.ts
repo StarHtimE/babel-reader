@@ -1,6 +1,6 @@
 import { Modal, Setting, type App, type ButtonComponent, type TFile } from "obsidian";
 import { titleToFileName } from "../core/naming";
-import type { TitleSuggestion } from "../core/title";
+import { SOURCE_LABELS, type TitleCandidate, type TitleSuggestion } from "../core/title";
 import { targetPathFor } from "./target-path";
 
 export interface BatchRenameRow {
@@ -13,6 +13,10 @@ export interface BatchRenameRow {
 interface RowState extends BatchRenameRow {
 	checked: boolean;
 	value: string;
+	/** 推荐标题在前，其他候选在后 */
+	candidates: TitleCandidate[];
+	/** 当前用的是第几个候选 */
+	chosen: number;
 	descEl: HTMLElement | null;
 	/** 最近一次计算出的目标路径；不改名时为 null */
 	target: string | null;
@@ -34,8 +38,9 @@ export class BatchRenameModal extends Modal {
 	) {
 		super(app);
 		this.rows = rows.map((r) => {
-			const value = r.suggestion ? (titleToFileName(r.suggestion.primary.title) ?? r.file.basename) : r.file.basename;
-			return { ...r, value, checked: r.suggestion !== null, descEl: null, target: null };
+			const candidates = r.suggestion ? [r.suggestion.primary, ...r.suggestion.alternatives] : [];
+			const value = candidates[0] ? (titleToFileName(candidates[0].title) ?? r.file.basename) : r.file.basename;
+			return { ...r, value, candidates, chosen: 0, checked: r.suggestion !== null, descEl: null, target: null };
 		});
 		// 文件名本来就是标题的，默认不勾选
 		this.recompute();
@@ -71,6 +76,19 @@ export class BatchRenameModal extends Modal {
 	}
 
 	private toggles = new Map<RowState, (v: boolean) => void>();
+	private inputs = new Map<RowState, (v: string) => void>();
+
+	/** 改用另一个候选标题：填进文件名并勾选这一行 */
+	private choose(row: RowState, index: number): void {
+		const c = row.candidates[index];
+		if (!c) return;
+		row.chosen = index;
+		row.value = titleToFileName(c.title) ?? row.value;
+		this.inputs.get(row)?.(row.value);
+		row.checked = true;
+		this.toggles.get(row)?.(true);
+		this.refresh();
+	}
 
 	private renderRow(parent: HTMLElement, row: RowState): void {
 		const s = new Setting(parent).setName(row.file.name);
@@ -78,6 +96,7 @@ export class BatchRenameModal extends Modal {
 		row.descEl = s.descEl;
 		s.addText((t) => {
 			t.inputEl.addClass("babel-reader-rename-input");
+			this.inputs.set(row, (v) => t.setValue(v));
 			t.setPlaceholder("新文件名").setValue(row.value).onChange((v) => {
 				row.value = v;
 				// 修改了文件名就默认要改
@@ -123,8 +142,16 @@ export class BatchRenameModal extends Modal {
 			const el = r.descEl;
 			if (!el) continue;
 			el.empty();
-			if (r.suggestion) {
-				el.createDiv({ text: `识别到：${r.suggestion.primary.title}` });
+			const current = r.candidates[r.chosen];
+			if (current) {
+				el.createDiv({ text: `识别到（${SOURCE_LABELS[current.source]}）：${current.title}` });
+				r.candidates.forEach((c, i) => {
+					if (i === r.chosen) return;
+					const alt = el.createDiv({ cls: "babel-reader-batch-rename-alt" });
+					alt.createSpan({ text: `另一个候选（${SOURCE_LABELS[c.source]}）：${c.title}` });
+					const btn = alt.createEl("button", { text: "使用" });
+					btn.addEventListener("click", () => this.choose(r, i));
+				});
 			} else if (r.error) {
 				el.createDiv({ cls: "babel-reader-rename-warning", text: r.error });
 			}

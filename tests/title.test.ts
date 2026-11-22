@@ -140,6 +140,56 @@ describe("真实 PDF 里见过的情况", () => {
 		expect(titleFromMetadata(t + t)).toBe(t);
 	});
 
+	it("Elsevier 页眉里的期刊名字号比标题大时跳过", () => {
+		const p = page([
+			run("Contents lists available at ScienceDirect", 227, 725, 8),
+			run("ISPRS Journal of Photogrammetry and Remote Sensing", 132, 697, 13.9),
+			run("journal homepage: www.elsevier.com/locate/isprsjprs", 196, 670, 8),
+			run("A differentiable method for novel view SAR image generation via 3D", 38, 617, 13.4),
+			run("Gaussian Splatting", 38, 600, 13.4),
+			run("Zinan Liu", 38, 580, 10.6),
+			...BODY,
+		]);
+		expect(titleFromPage(p)).toBe("A differentiable method for novel view SAR image generation via 3D Gaussian Splatting");
+		// 期刊名不含 Journal 字样时，靠上下两行的页眉认出来
+		const q = page([
+			run("Contents lists available at ScienceDirect", 227, 725, 8),
+			run("Remote Sensing of Environment", 132, 697, 16),
+			run("journal homepage: www.elsevier.com/locate/rse", 196, 670, 8),
+			run("Mapping Forest Height from Space", 38, 617, 14),
+			...BODY,
+		]);
+		expect(titleFromPage(q)).toBe("Mapping Forest Height from Space");
+	});
+
+	it("small caps 标题：首字母大字号、其余小一号大写，拼成正常大小写", () => {
+		// Spikformer（ICLR 2023 投稿版）首页，字号按 pdf.js 可能给出的略有出入的值
+		const r = (text: string, x0: number, x1: number, y: number, size: number) =>
+			run(text, x0, y, size, { width: x1 - x0 });
+		const p = page([
+			r("FOR REVIEW", 108, 168.6, 756.6, 10),
+			r("S", 108.4, 118, 698.4, 17.22),
+			r("PIKFORMER", 118.9, 204.5, 698.4, 13.77),
+			r(":", 205.3, 210.1, 698.4, 17.22),
+			r("W", 226.3, 242.6, 698.4, 17.22),
+			r("HEN", 243.4, 273.4, 698.4, 13.77),
+			r("S", 283.6, 293.1, 698.4, 17.22),
+			r("PIKING", 294, 344.9, 698.4, 13.77),
+			r("N", 355.1, 367.5, 698.4, 17.22),
+			r("EURAL", 368.4, 417.7, 698.4, 13.77),
+			r("N", 427.8, 440.2, 698.4, 17.22),
+			r("ETWORK", 441.1, 504.1, 698.4, 13.77),
+			r("M", 108.4, 123.7, 678.5, 17.22),
+			r("EETS", 124.6, 160, 678.5, 13.77),
+			r(" T", 160, 175.7, 678.5, 17.22),
+			r("RANSFORMER", 176.6, 277.6, 678.5, 13.77),
+			r("1,2", 116.5, 126.8, 651, 7),
+			r("Zhaokun Zhou", 127.3, 191.2, 647.4, 10),
+			...BODY,
+		]);
+		expect(titleFromPage(p)).toBe("Spikformer: When Spiking Neural Network Meets Transformer");
+	});
+
 	it("首页文字与元数据一致时来源记为首页文字", () => {
 		const p = page([run("Same Title In Both Places", 80, 700, 20), ...BODY]);
 		expect(suggestTitle(p, "Same Title In Both Places")).toEqual({
