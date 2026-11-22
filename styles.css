@@ -20,3 +20,31 @@
 	min-height: 4em;
 	width: 100%;
 }
+
+/* 按论文标题重命名 */
+.babel-reader-rename-title {
+	padding: var(--size-4-2) var(--size-4-3);
+	border-left: 3px solid var(--interactive-accent);
+	background-color: var(--background-secondary);
+	user-select: text;
+}
+
+.babel-reader-rename-input {
+	width: 100%;
+}
+
+.babel-reader-rename .setting-item:has(.babel-reader-rename-input) {
+	flex-wrap: wrap;
+}
+
+.babel-reader-rename .setting-item-control:has(.babel-reader-rename-input) {
+	flex: 1 1 100%;
+}
+
+.babel-reader-rename-preview {
+	word-break: break-all;
+}
+
+.babel-reader-rename-preview.mod-warning {
+	color: var(--text-error);
+}

@@ -23,7 +23,7 @@ interface HeaderState {
 
 /**
  * PDF 视图头部的按钮：
- * - 原文：始终有「翻译」按钮（已有译文时为「重新翻译」）
+ * - 原文：始终有「翻译」按钮（已有译文时为「重新翻译」），以及「按论文标题重命名」
  * - 有译文（原文或译文本身）：另有 原文 / 译文 / 对照 三态切换，切换时保持页码
  */
 export class ModeSwitcher {
@@ -33,6 +33,7 @@ export class ModeSwitcher {
 		private readonly app: App,
 		private readonly store: TranslationStore,
 		private readonly onTranslate: (file: TFile) => void,
+		private readonly onRename: (file: TFile) => void,
 	) {}
 
 	/** 刷新所有 PDF 视图的头部按钮 */
@@ -80,8 +81,12 @@ export class ModeSwitcher {
 
 		const els: HTMLElement[] = [];
 		if (file && plan) {
-			// addAction 往前插入：先加的显示在最右。最终顺序为 原文 / 译文 / 对照 / 翻译
+			// addAction 往前插入：先加的显示在最右。最终顺序为 原文 / 译文 / 对照 / 翻译 / 重命名
 			if (plan.translatable) {
+				const rename = view.addAction("pencil", "按论文标题重命名", () => this.onRename(file));
+				rename.addClass("babel-reader-rename-button");
+				els.push(rename);
+
 				// 已有译文时「译文」按钮占用了 languages 图标，重新翻译改用刷新图标以免重复
 				const [icon, title] = plan.entry
 					? ["refresh-cw", "重新翻译当前 PDF"]

@@ -113,6 +113,17 @@ export class TranslationIndex {
 		return out;
 	}
 
+	/** 原文路径等于 path，或位于 path 目录之下的所有条目（用于原文或其所在文件夹被重命名 / 删除） */
+	entriesUnderSource(path: string): TranslationEntry[] {
+		const prefix = `${path}/`;
+		const out: TranslationEntry[] = [];
+		for (const e of this.byManifest.values()) {
+			const src = e.manifest.source.path;
+			if (src === path || src.startsWith(prefix)) out.push(e);
+		}
+		return out;
+	}
+
 	/** 某篇原文的首选译文 */
 	forSource(sourcePath: string, preferLangOut?: string): TranslationEntry | undefined {
 		const entries = this.entriesForSource(sourcePath);

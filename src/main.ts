@@ -4,9 +4,11 @@ import { mergeSettings, type BabelReaderSettings } from "./core/settings-model";
 import type { ViewMode } from "./core/types";
 import { TranslationJobs } from "./jobs/translation-jobs";
 import { ServerLauncher } from "./launcher/server-launcher";
+import { TitleRenamer } from "./rename/title-renamer";
 import { BabelReaderSettingTab } from "./settings";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
+import { OrphanPrompt } from "./view/orphan-prompt";
 
 /** 入口：只做注册，业务逻辑在各模块里 */
 export default class BabelReaderPlugin extends Plugin {
@@ -16,6 +18,7 @@ export default class BabelReaderPlugin extends Plugin {
 	private store!: TranslationStore;
 	private jobs!: TranslationJobs;
 	private switcher!: ModeSwitcher;
+	private renamer!: TitleRenamer;
 
 	async onload(): Promise<void> {
 		this.settings = mergeSettings(await this.loadData());
@@ -46,7 +49,13 @@ export default class BabelReaderPlugin extends Plugin {
 		this.registerDomEvent(statusEl, "click", () => void this.jobs.onStatusClick());
 		this.register(() => this.jobs.dispose());
 
-		this.switcher = new ModeSwitcher(this.app, this.store, (file) => void this.jobs.translate(file));
+		this.renamer = new TitleRenamer(this.app, this.store);
+		this.switcher = new ModeSwitcher(
+			this.app,
+			this.store,
+			(file) => void this.jobs.translate(file),
+			(file) => void this.renamer.run(file),
+		);
 		this.register(() => this.switcher.detachAll());
 		this.register(this.store.onChange(() => this.switcher.refreshAll()));
 
@@ -55,6 +64,22 @@ export default class BabelReaderPlugin extends Plugin {
 
 		this.registerEvent(this.app.workspace.on("layout-change", () => this.switcher.refreshAll()));
 		this.registerEvent(this.app.workspace.on("file-open", () => this.switcher.refreshAll()));
+
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (!this.renamer.canRename(file)) return;
+				menu.addItem((item) =>
+					item
+						.setTitle("按论文标题重命名")
+						.setIcon("pencil")
+						.onClick(() => void this.renamer.run(file)),
+				);
+			}),
+		);
+
+		const orphans = new OrphanPrompt(this.app, this.store);
+		this.register(() => orphans.dispose());
+		this.register(this.store.onSourceDeleted((entries) => orphans.add(entries)));
 
 		const vault = this.app.vault;
 		this.registerEvent(vault.on("delete", (file) => this.store.handleDelete(file)));
@@ -87,6 +112,17 @@ export default class BabelReaderPlugin extends Plugin {
 				// 译文文件本身不再翻译
 				if (this.store.index.isOutputPath(file.path)) return false;
 				if (!checking) void this.jobs.translate(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "rename-by-title",
+			name: "按论文标题重命名当前 PDF",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!this.renamer.canRename(file)) return false;
+				if (!checking) void this.renamer.run(file);
 				return true;
 			},
 		});

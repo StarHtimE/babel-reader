@@ -58,3 +58,54 @@ export function isInsideDir(path: string, dir: string): boolean {
 	if (dir === "") return true;
 	return path.startsWith(`${dir}/`);
 }
+
+/** 由标题生成的文件名（不含扩展名）的默认长度上限：译文路径里会出现两次，留出余量 */
+export const TITLE_FILE_NAME_MAX = 120;
+
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+
+/**
+ * 把论文标题变成可用的文件名（不含扩展名）：
+ * - 冒号换成「 - 」，斜杠和竖线换成「-」，方括号换成圆括号（方括号、#、^ 会破坏 Obsidian 链接）
+ * - 去掉 Windows 不允许的字符，合并空白，去掉结尾的点和空格
+ * - 超长时在词边界截断
+ * 结果为空时返回 null。
+ */
+export function titleToFileName(title: string, maxLength = TITLE_FILE_NAME_MAX): string | null {
+	let s = title
+		.normalize("NFKC")
+		// eslint-disable-next-line no-control-regex -- 有意剔除控制字符
+		.replace(/[\u0000-\u001f\u007f]/g, " ")
+		.replace(/\s*:\s*/g, " - ")
+		.replace(/\s*[\\/|]\s*/g, "-")
+		.replace(/"/g, "'")
+		.replace(/\[/g, "(")
+		.replace(/\]/g, ")")
+		.replace(/[*?<>#^]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (s.length > maxLength) {
+		const cut = s.slice(0, maxLength);
+		const space = cut.lastIndexOf(" ");
+		s = space >= maxLength * 0.6 ? cut.slice(0, space) : cut;
+		s = s.replace(/[\s,;.\-–—(]+$/u, "");
+	}
+	s = s.replace(/^[.\s]+/, "").replace(/[.\s]+$/, "");
+	if (s === "") return null;
+	if (WINDOWS_RESERVED.test(s)) s = `${s}_`;
+	return s;
+}
+
+/**
+ * 在 dir 里为 base + ext 找一个不重名的路径："a.pdf" → "a (2).pdf" → "a (3).pdf"。
+ * taken 判断某个文件名是否已被占用（调用方按大小写不敏感比较，Windows 上 A.pdf 与 a.pdf 冲突）。
+ */
+export function uniqueFileName(base: string, ext: string, taken: (name: string) => boolean): string {
+	const first = `${base}${ext}`;
+	if (!taken(first)) return first;
+	for (let n = 2; n < 1000; n++) {
+		const name = `${base} (${n})${ext}`;
+		if (!taken(name)) return name;
+	}
+	throw new Error("找不到不重名的文件名");
+}

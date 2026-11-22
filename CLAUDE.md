@@ -18,11 +18,12 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 ├── src/
 │   ├── main.ts         # 入口：只做注册（命令、事件、视图按钮、设置页），不放业务逻辑
 │   ├── settings.ts
-│   ├── core/           # 纯逻辑，禁止 import 'obsidian'：页码映射、命名、manifest 校验、multipart 构造
+│   ├── core/           # 纯逻辑，禁止 import 'obsidian'：页码映射、命名、manifest 校验、multipart 构造、标题识别
 │   ├── api/            # 与服务通信：requestUrl 封装、轮询
 │   ├── store/          # manifest 读写、原文 ⇄ 译文索引
 │   ├── jobs/           # 任务队列、进度、取消
 │   ├── launcher/       # 桌面端按需启动本机服务（唯一使用 Node 模块的地方）
+│   ├── rename/         # 按论文标题重命名：用 pdf.js 读首页、确认弹窗
 │   └── view/           # PDF 视图头部按钮、模式切换、读当前页号
 ├── tests/              # vitest；主要覆盖 src/core
 └── server/             # Python 翻译服务（AGPL-3.0，单独的 LICENSE）
@@ -80,7 +81,10 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
    - dual 只用左右并排，禁止交替页（`use_alternating_pages_dual`）
    - 部分翻译时禁止 `only_include_translated_page`，未翻译的页保留原文
    - 允许 `dual_translate_first`（只影响左右顺序）
-2. **原文是正本。** 链接、反链、高亮只落在原文；插件永远不修改原文文件；译文只写进译文目录。
+2. **原文是正本。** 链接、反链、高亮只落在原文；插件永远不修改原文的内容；译文只写进译文目录。
+   - 唯一例外是改名：只有用户在「按论文标题重命名」弹窗里确认后，用 `app.fileManager.renameFile` 改文件名（Obsidian 据此更新链接），不移动到别的文件夹
+   - 原文改名 / 移动后，译文跟随（`src/core/relocate.ts`）：只改插件生成的译文目录名和文件名，用户手动改过的不动
+   - 原文被删除时只询问、默认保留译文；删除译文用 `fileManager.trashFile`（遵循用户的回收站设置）
 3. **Obsidian 开发者政策。**
    - 插件不得安装或更新自身及其依赖：不在插件里执行 uv / pip / npm，不下载服务端
    - 允许启动用户**已安装**的服务（`src/launcher/`）：只运行 `<服务目录>/.venv` 里现成的 `babel-reader-server`，不用 `uv run`（它会自动同步依赖）。仅在点翻译或「测试连接」且连不上本机地址时启动，不随 Obsidian 启动；只结束自己启动的进程（整棵进程树），在 `onunload` 和 `workspace.on('quit')` 时结束
@@ -176,7 +180,7 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 ```
 
 - 插件启动时扫描所有 manifest，建立 原文路径 ⇄ 译文 的双向索引；用户直接打开译文文件时也要能反查到原文
-- `vault.on('rename')` 时更新 `source.path`；`vault.on('delete')` 删除原文时提示是否一并删除译文
+- `vault.on('rename')` 时更新 `source.path`，文件名变了时译文目录和文件一起改名；`vault.on('delete')` 删除原文时提示是否一并删除译文（同一次操作的多个删除合并成一次询问）
 - 原文 sha256 与 manifest 不一致 → 标记为过期，不自动重译
 - 不依赖 BabelDOC 的输出文件命名规则：以服务返回的结果为准，再按上面的规则命名写入
 
@@ -199,10 +203,11 @@ Babel Reader = Obsidian 插件 + 本地翻译服务。对仓库内的 PDF 调用
 - 翻译在子进程里跑；取消正在 await 该生成器的 asyncio task 即可，生成器的 `finally` 会结束子进程
 - warmup 入口：`babeldoc.assets.assets.warmup()`
 - 并发：每个任务一个子进程，理论上可并发；v0.1 仍串行
+- 读 PDF 首页：公开 API `loadPdfJs()`（Obsidian 内置 pdf.js，移动端可用），返回类型是 `any`，在 `src/rename/read-first-page.ts` 里逐个方法做类型守卫；文本项 `{str, transform, width}`，字高取 `hypot(transform[2], transform[3])`，`transform[0] > 0 且 transform[1] ≈ 0` 才是横排文字（arXiv 左侧编号是旋转的）；元数据 `getMetadata()` → `info.Title` 与 XMP `metadata.get("dc:title")`（见过 XMP 把标题重复两遍）
 - Obsidian PDF 视图页号：`view.viewer.child.pdfViewer.pdfViewer.currentPageNumber`（1 起），回退 `view.getState().page`；跳页用公开的 `leaf.openFile(file, { eState: { subpath: "#page=N" } })`（参考 PDF++ `src/typings.d.ts`）
 
 ## 路线图
 
 - **v0.1**：设置页 + 测试连接；「翻译当前 PDF」；状态栏进度与取消；写入译文目录和 manifest；视图头部三态切换并保持页码；点翻译或测试连接时按需自动启动本机服务（默认开启）；在插件设置里配置大模型（API key 存 Obsidian 密钥存储，minAppVersion 1.11.4）
-- **v0.2**：右键批量翻译与队列；过期检测；重命名 / 删除跟踪；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
+- **v0.2**：右键批量翻译与队列（同时提供批量「按论文标题重命名」，复用同一个确认流程，改为列表逐项确认）；过期检测；重命名 / 删除跟踪（已完成）；按论文标题重命名：首页文字 + PDF 元数据（已完成；以后可加「让大模型识别」作为补充）；术语表（笔记表格或 CSV → 传给服务；自动抽取的术语回写待审核）
 - **v0.3**：原文与译文双 pane 同步滚动；移动端裁剪阅读；局域网远程服务（令牌鉴权）
