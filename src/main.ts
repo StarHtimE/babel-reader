@@ -11,6 +11,7 @@ import { StaleChecker } from "./store/stale-checker";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
 import { OrphanPrompt } from "./view/orphan-prompt";
+import { isPdfView } from "./view/pdf-internals";
 import { QueueModal } from "./view/queue-modal";
 
 /** 入口：只做注册，业务逻辑在各模块里 */
@@ -22,6 +23,7 @@ export default class BabelReaderPlugin extends Plugin {
 	private jobs!: TranslationJobs;
 	private switcher!: ModeSwitcher;
 	private renamer!: TitleRenamer;
+	private batch!: BatchActions;
 
 	async onload(): Promise<void> {
 		this.settings = mergeSettings(await this.loadData());
@@ -74,9 +76,9 @@ export default class BabelReaderPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on("file-open", () => this.switcher.refreshAll()));
 
 		// 文件列表右键菜单：单个 PDF、文件夹、多选
-		const batch = new BatchActions(this.app, this.store, stale, this.jobs, this.renamer, () => this.settings);
-		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => batch.addMenuItems(menu, [file])));
-		this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => batch.addMenuItems(menu, files)));
+		this.batch = new BatchActions(this.app, this.store, stale, this.jobs, this.renamer, () => this.settings);
+		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => this.batch.addMenuItems(menu, [file])));
+		this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => this.batch.addMenuItems(menu, files)));
 
 		const orphans = new OrphanPrompt(this.app, this.store);
 		this.register(() => orphans.dispose());
@@ -130,6 +132,18 @@ export default class BabelReaderPlugin extends Plugin {
 				// 译文文件本身不再翻译
 				if (this.store.index.isOutputPath(file.path)) return false;
 				if (!checking) this.jobs.translate(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "translate-pages",
+			name: "翻译当前 PDF 的指定页…",
+			checkCallback: (checking) => {
+				// PDF 视图类不公开，看最近活动的 leaf
+				const view = this.app.workspace.getMostRecentLeaf()?.view;
+				if (!isPdfView(view) || !view.file || !this.store.isSourcePdf(view.file)) return false;
+				if (!checking) this.batch.translatePages(view.file, view);
 				return true;
 			},
 		});

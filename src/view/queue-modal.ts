@@ -1,4 +1,5 @@
 import { Modal, Setting, type App } from "obsidian";
+import { describePageRanges } from "../core/page";
 import type { QueueItemState } from "../core/queue";
 import type { TranslationItem, TranslationJobs } from "../jobs/translation-jobs";
 
@@ -60,7 +61,9 @@ export class QueueModal extends Modal {
 	}
 
 	private renderItem(parent: HTMLElement, item: TranslationItem): void {
-		const row = new Setting(parent).setName(item.payload.basename);
+		const pages = this.jobs.pagesOf(item);
+		const name = pages === null ? item.payload.basename : `${item.payload.basename}（${describePageRanges(pages)}）`;
+		const row = new Setting(parent).setName(name);
 		row.settingEl.addClass("babel-reader-queue-item", `is-${item.state}`);
 		row.setDesc(describe(item));
 		if (item.state === "waiting" || item.state === "running") {

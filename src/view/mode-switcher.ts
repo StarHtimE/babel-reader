@@ -1,4 +1,5 @@
 import { Notice, type App, type FileView, type TFile } from "obsidian";
+import { describePageRanges } from "../core/page";
 import type { TranslationEntry } from "../core/translation-index";
 import { VIEW_MODES, type ViewMode } from "../core/types";
 import type { StaleChecker } from "../store/stale-checker";
@@ -101,7 +102,11 @@ export class ModeSwitcher {
 			const entry = plan.entry;
 			if (entry) {
 				for (const mode of [...plan.modes].reverse()) {
-					const el = view.addAction(MODE_ICONS[mode], `切换到${MODE_LABELS[mode]}`, () => {
+					const partial =
+						mode !== "original" && entry.manifest.options.pages !== null
+							? `（只翻译了${describePageRanges(entry.manifest.options.pages)}）`
+							: "";
+					const el = view.addAction(MODE_ICONS[mode], `切换到${MODE_LABELS[mode]}${partial}`, () => {
 						void this.switchTo(view, entry, mode);
 					});
 					el.addClass("babel-reader-mode-button");

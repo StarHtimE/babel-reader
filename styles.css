@@ -92,3 +92,8 @@
 .view-action.babel-reader-stale-button {
 	color: var(--text-warning);
 }
+
+/* 翻译指定页：校验结果 */
+.babel-reader-pages-message {
+	min-height: 1.5em;
+}

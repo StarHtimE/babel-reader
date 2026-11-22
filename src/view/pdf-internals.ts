@@ -60,6 +60,12 @@ export function getCurrentPage(view: FileView): number {
 	return normalizePage(readPageFromState(view));
 }
 
+/** 总页数；视图还没加载完或读不到时返回 undefined（调用方不做范围检查） */
+export function getPageCount(view: FileView): number | undefined {
+	const count = getPdfJsViewer(view)?.pagesCount;
+	return typeof count === "number" && Number.isInteger(count) && count > 0 ? count : undefined;
+}
+
 /** 在给定 leaf 里打开 PDF 并定位到第 page 页（公开 API：eState.subpath） */
 export async function openPdfAtPage(leaf: WorkspaceLeaf, file: TFile, page: number): Promise<void> {
 	await leaf.openFile(file, { active: true, eState: { subpath: pageSubpath(page) } });

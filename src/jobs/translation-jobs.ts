@@ -3,6 +3,7 @@ import type { ServerClient } from "../api/client";
 import { errorMessage } from "../core/errors";
 import { sha256Hex } from "../core/hash";
 import { buildLlmJobOptions, canSendSecretTo, type LlmJobOptions } from "../core/llm";
+import { describePageRanges } from "../core/page";
 import { PollCancelledError, pollJob } from "../core/poll";
 import { formatProgress } from "../core/progress";
 import { JobQueue, summaryText, type QueueItem } from "../core/queue";
@@ -39,6 +40,8 @@ class ItemCancelledError extends Error {
 export class TranslationJobs {
 	private queue = new JobQueue<TFile>();
 	private jobIds = new Map<number, string>();
+	/** 指定页翻译：任务 id → 页码范围（没有记录的翻译全部页） */
+	private pagesById = new Map<number, string>();
 	private pumping = false;
 	private disposed = false;
 	private timers = new Set<number>();
@@ -78,20 +81,27 @@ export class TranslationJobs {
 		for (const cb of this.listeners) cb();
 	}
 
-	/** 翻译一篇（加入队列） */
-	translate(file: TFile): void {
+	/** 某个任务指定的页码范围；null 表示全部页 */
+	pagesOf(item: TranslationItem): string | null {
+		return this.pagesById.get(item.id) ?? null;
+	}
+
+	/** 翻译一篇（加入队列）；pages 为页码范围，null 表示全部页 */
+	translate(file: TFile, pages: string | null = null): void {
 		if (this.queue.has(file)) {
 			new Notice(`「${file.basename}」已在翻译队列里`);
 			return;
 		}
 		const ahead = this.queue.list().filter((i) => i.state === "waiting" || i.state === "running").length;
-		this.enqueue([file]);
+		this.enqueue([file], pages);
 		if (ahead > 0) new Notice(`已加入翻译队列，前面还有 ${ahead} 篇`);
 	}
 
 	/** 加入一批；返回实际加入的数量（已在队列里的跳过） */
-	enqueue(files: readonly TFile[]): number {
+	enqueue(files: readonly TFile[], pages: string | null = null): number {
+		if (!this.queue.busy) this.pagesById.clear();
 		const added = this.queue.add(files);
+		if (pages !== null) for (const item of added) this.pagesById.set(item.id, pages);
 		if (added.length > 0) {
 			this.emitChange();
 			void this.pump();
@@ -155,7 +165,10 @@ export class TranslationJobs {
 		try {
 			await this.translateOne(item);
 			this.queue.finish(item, "done", "完成");
-			if (single) new Notice(`「${file.basename}」翻译完成`);
+			if (single) {
+				const pages = this.pagesOf(item);
+				new Notice(`「${file.basename}」${pages === null ? "" : describePageRanges(pages)}翻译完成`);
+			}
 		} catch (err) {
 			if (err instanceof ItemCancelledError || err instanceof PollCancelledError || item.cancelRequested) {
 				this.queue.finish(item, "cancelled", "已取消");
@@ -206,7 +219,7 @@ export class TranslationJobs {
 				"翻译服务版本太旧，不支持插件里的大模型配置。请更新服务端（git pull 后 uv sync）并重启 Obsidian",
 			);
 		}
-		const options = buildJobOptions(settings, {}, llm);
+		const options = buildJobOptions(settings, { pages: this.pagesOf(item) }, llm);
 
 		this.setDetail(item, "读取原文…");
 		const stamp = { mtime: file.stat.mtime, size: file.stat.size };

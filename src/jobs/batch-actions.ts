@@ -1,9 +1,11 @@
-import { Notice, TFile, TFolder, type App, type Menu, type TAbstractFile } from "obsidian";
+import { Notice, TFile, TFolder, type App, type FileView, type Menu, type TAbstractFile } from "obsidian";
 import { langOutOf, type BabelReaderSettings } from "../core/settings-model";
 import type { TitleRenamer } from "../rename/title-renamer";
 import type { StaleChecker } from "../store/stale-checker";
 import type { TranslationStore } from "../store/translation-store";
 import { BatchTranslateModal, type BatchTranslatePlan } from "../view/batch-translate-modal";
+import { PagesModal } from "../view/pages-modal";
+import { getCurrentPage, getPageCount } from "../view/pdf-internals";
 import type { TranslationJobs } from "./translation-jobs";
 
 /** 文件列表右键菜单里的翻译 / 重命名：单个 PDF、文件夹、多选 */
@@ -40,12 +42,39 @@ export class BatchActions {
 				.setIcon("languages")
 				.onClick(() => void this.translate(targets)),
 		);
+		if (only instanceof TFile) {
+			menu.addItem((item) =>
+				item
+					.setTitle("翻译指定页…")
+					.setIcon("languages")
+					.onClick(() => this.translatePages(only)),
+			);
+		}
 		menu.addItem((item) =>
 			item
 				.setTitle(renameTitle)
 				.setIcon("pencil")
 				.onClick(() => void this.renamer.runBatch(this.store.collectSourcePdfs(targets))),
 		);
+	}
+
+	/** 翻译指定页：弹窗输入页码范围。从 PDF 视图打开时带上当前页和总页数 */
+	translatePages(file: TFile, view?: FileView): void {
+		if (this.jobs.isQueued(file)) {
+			new Notice(`「${file.basename}」已在翻译队列里`);
+			return;
+		}
+		const previous = this.store.index.forSource(file.path, langOutOf(this.getSettings()));
+		new PagesModal(
+			this.app,
+			{
+				file,
+				currentPage: view ? getCurrentPage(view) : undefined,
+				pageCount: view ? getPageCount(view) : undefined,
+				previousPages: previous ? previous.manifest.options.pages : undefined,
+			},
+			(pages) => this.jobs.translate(file, pages),
+		).open();
 	}
 
 	/** 翻译单个 PDF 时直接加入队列；文件夹或多选时先弹窗确认 */
