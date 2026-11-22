@@ -84,7 +84,7 @@ def test_health_and_profiles(tmp_path):
         h = c.get("/v1/health").json()
         assert h == {
             "ok": True,
-            "server_version": "0.1.1",
+            "server_version": "0.2.0",
             "pdf2zh_next_version": "2.10.2",
             "babeldoc_version": "0.7.1",
             "features": ["llm", "glossary"],

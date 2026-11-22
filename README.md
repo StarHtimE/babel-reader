@@ -2,7 +2,7 @@
 
 > 在 Obsidian 里一键生成保留排版的 PDF 译文，并在「原文 / 译文 / 对照」之间切换，切换后停在同一页。
 
-**状态：v0.1.1**，可从 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载。尚未上架 Obsidian 社区插件目录，需要手动安装（见「安装」）。只在 Windows 桌面端测试过。
+**状态：v0.2.0**，可从 [Releases](https://github.com/StarHtimE/babel-reader/releases) 下载。尚未上架 Obsidian 社区插件目录，需要手动安装（见「安装」）。只在 Windows 桌面端测试过。
 
 ## 它做什么
 
