@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranslationManifest } from "../src/core/manifest";
-import { titleToFileName, uniqueFileName } from "../src/core/naming";
+import { outputFileName, shortenName, titleToFileName, translationDirName, uniqueFileName } from "../src/core/naming";
 import { movedSourcePath, planRelocation } from "../src/core/relocate";
 import { TranslationIndex, type TranslationEntry } from "../src/core/translation-index";
 
@@ -125,5 +125,47 @@ describe("TranslationIndex.entriesUnderSource", () => {
 		expect(index.entriesUnderSource("Papers").map((e) => e.manifestPath)).toEqual([GENERATED.manifestPath]);
 		expect(index.entriesUnderSource("Papers/2108.13342v2.pdf")).toHaveLength(1);
 		expect(index.entriesUnderSource("Pap")).toHaveLength(0);
+	});
+});
+
+describe("译文名限长（避开 Windows 260 字符的路径上限）", () => {
+	const LONG =
+		"Architecture and engineering trade-offs of a heterogeneous spaceborne supercomputing node for future onboard";
+
+	it("译文目录名和文件名里的原文名不超过 60 个字符，在词边界截断", () => {
+		expect(shortenName("short", 60)).toBe("short");
+		expect(shortenName(LONG, 60)).toBe("Architecture and engineering trade-offs of a heterogeneous");
+		expect(shortenName("A_Satellite-Born_Server_Design_with_Massive_Tiny_Chips_Towards_In-Space_Computing", 60)).toBe(
+			"A_Satellite-Born_Server_Design_with_Massive_Tiny_Chips",
+		);
+		expect(shortenName("x".repeat(80), 60)).toHaveLength(60);
+		expect(translationDirName(LONG, "yqqwar")).toBe(
+			"Architecture and engineering trade-offs of a heterogeneous-yqqwar",
+		);
+		expect(outputFileName(LONG, "zh", "mono")).toBe("Architecture and engineering trade-offs of a heterogeneous.zh.mono.pdf");
+		expect(outputFileName(LONG, "zh", "mono", Infinity)).toBe(`${LONG}.zh.mono.pdf`);
+	});
+
+	it("旧版不限长的名字算插件生成的：移动原文时顺便改成短名字", () => {
+		const dir = `_translations/${LONG}-yqqwar`;
+		const legacy = entry(dir, `BatchTest/${LONG}.pdf`, {
+			mono: `${LONG}.zh.mono.pdf`,
+			dual: `${LONG}.zh.dual.pdf`,
+		});
+		const legacyId = { ...legacy, manifest: { ...legacy.manifest, id: "yqqwar" } };
+		const has = (p: string) => p === `${dir}/${LONG}.zh.mono.pdf` || p === `${dir}/${LONG}.zh.dual.pdf`;
+		// 原文路径不变（重新翻译前调用）也会改短
+		const plan = planRelocation(legacyId, `BatchTest/${LONG}.pdf`, "_translations", has);
+		expect(plan.fileRenames.map((r) => r.to.split("/").pop())).toEqual([
+			"Architecture and engineering trade-offs of a heterogeneous.zh.mono.pdf",
+			"Architecture and engineering trade-offs of a heterogeneous.zh.dual.pdf",
+		]);
+		expect(plan.dirRename?.to).toBe("_translations/Architecture and engineering trade-offs of a heterogeneous-yqqwar");
+	});
+
+	it("名字已经是短名字、原文名没变时不改名", () => {
+		const plan = planRelocation(GENERATED, "Papers/2108.13342v2.pdf", "_translations", () => true);
+		expect(plan.fileRenames).toEqual([]);
+		expect(plan.dirRename).toBeNull();
 	});
 });

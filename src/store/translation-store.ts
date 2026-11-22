@@ -177,9 +177,13 @@ export class TranslationStore {
 		this.emitChange();
 	}
 
-	private async relocate(entry: TranslationEntry, newSourcePath: string): Promise<void> {
+	/** 返回改完后的条目（manifest 路径可能已变） */
+	private async relocate(entry: TranslationEntry, newSourcePath: string): Promise<TranslationEntry> {
 		const exists = (p: string) => this.app.vault.getAbstractFileByPath(p) !== null;
 		const plan = planRelocation(entry, newSourcePath, this.translationsDir(), exists);
+		if (plan.fileRenames.length === 0 && !plan.dirRename && newSourcePath === entry.manifest.source.path) {
+			return entry;
+		}
 		// 先更新索引：同一次改名的后续事件（例如文件夹里每个文件各触发一次）不会重复处理
 		this.index.set({ manifestPath: entry.manifestPath, manifest: plan.manifest });
 
@@ -187,15 +191,31 @@ export class TranslationStore {
 		for (const g of guarded) this.relocating.add(g);
 		// 实际做成了哪些改名，就记哪些：中途失败时 manifest 仍与磁盘一致
 		const outputs = { ...entry.manifest.outputs };
+		let manifest = { ...plan.manifest, outputs };
 		let manifestPath = entry.manifestPath;
 		try {
+			// 1. 在原目录里给译文文件改名；有一个失败就停下，目录也不再改名
+			let allRenamed = true;
 			for (const r of plan.fileRenames) {
 				const f = this.app.vault.getAbstractFileByPath(r.from);
 				if (!(f instanceof TFile)) continue;
-				await this.app.fileManager.renameFile(f, r.to);
-				outputs[r.kind] = plan.manifest.outputs[r.kind];
+				try {
+					await this.app.fileManager.renameFile(f, r.to);
+					outputs[r.kind] = plan.manifest.outputs[r.kind];
+				} catch (err) {
+					console.error(`[babel-reader] 译文文件改名失败：${r.from}`, err);
+					allRenamed = false;
+					break;
+				}
 			}
-			if (plan.dirRename) {
+			manifest = { ...plan.manifest, outputs };
+
+			// 2. 趁目录还在原处时写 manifest。
+			//    不能等目录改名后再按新路径写：Obsidian 刚改完文件夹名时，按新路径还取不到里面的文件
+			await this.writeText(entry.manifestPath, serializeManifest(manifest));
+
+			// 3. 最后给目录改名，manifest 跟着目录一起移动
+			if (allRenamed && plan.dirRename) {
 				const folder = this.app.vault.getAbstractFileByPath(plan.dirRename.from);
 				if (folder instanceof TFolder) {
 					await this.app.fileManager.renameFile(folder, plan.dirRename.to);
@@ -203,15 +223,11 @@ export class TranslationStore {
 				}
 			}
 		} finally {
-			const manifest = { ...plan.manifest, outputs };
-			try {
-				await this.writeText(manifestPath, serializeManifest(manifest));
-			} finally {
-				for (const g of guarded) this.relocating.delete(g);
-				this.index.remove(entry.manifestPath);
-				this.index.set({ manifestPath, manifest });
-			}
+			for (const g of guarded) this.relocating.delete(g);
+			this.index.remove(entry.manifestPath);
+			this.index.set({ manifestPath, manifest });
 		}
+		return { manifestPath, manifest };
 	}
 
 	/** 把几组译文的目录移到回收站（遵循 Obsidian「删除文件」设置）；返回删除的组数 */
@@ -306,9 +322,17 @@ export class TranslationStore {
 
 		let id: string;
 		let dir: string;
+		let previous: TranslationEntry | null = null;
 		if (existing) {
-			id = existing.manifest.id;
-			dir = entryDir(existing);
+			// 旧版生成的不限长的名字：先改成限长的名字，免得路径超过 Windows 上限
+			try {
+				previous = await this.relocate(existing, params.source.path);
+			} catch (err) {
+				console.warn("[babel-reader] 译文改用短名字失败，沿用原来的目录", err);
+				previous = this.index.get(existing.manifestPath) ?? existing;
+			}
+			id = previous.manifest.id;
+			dir = entryDir(previous);
 		} else {
 			id = this.newShortId();
 			dir = joinVaultPath(this.translationsDir(), translationDirName(pdfBasename(params.source.path), id));
@@ -331,6 +355,13 @@ export class TranslationStore {
 			if (target === params.source.path) throw new Error("译文路径与原文相同，已中止写入");
 			await this.writeBinary(target, data);
 			outputs[kind] = name;
+		}
+		// 上一次的译文文件名和这次不同（例如旧版的长名字没能改名）：移到回收站，免得留下孤儿文件
+		for (const kind of ["mono", "dual"] as const) {
+			const oldName = previous?.manifest.outputs[kind];
+			if (oldName === undefined || oldName === outputs[kind] || outputs[kind] === undefined) continue;
+			const old = this.app.vault.getAbstractFileByPath(normalizePath(joinVaultPath(dir, oldName)));
+			if (old instanceof TFile) await this.app.fileManager.trashFile(old);
 		}
 
 		const manifest: TranslationManifest = {

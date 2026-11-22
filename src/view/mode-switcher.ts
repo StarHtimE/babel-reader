@@ -1,6 +1,7 @@
 import { Notice, type App, type FileView, type TFile } from "obsidian";
 import type { TranslationEntry } from "../core/translation-index";
 import { VIEW_MODES, type ViewMode } from "../core/types";
+import type { StaleChecker } from "../store/stale-checker";
 import type { TranslationStore } from "../store/translation-store";
 import { getCurrentPage, isPdfView, openPdfAtPage, PDF_VIEW_TYPE } from "./pdf-internals";
 
@@ -25,6 +26,7 @@ interface HeaderState {
  * PDF 视图头部的按钮：
  * - 原文：始终有「翻译」按钮（已有译文时为「重新翻译」），以及「按论文标题重命名」
  * - 有译文（原文或译文本身）：另有 原文 / 译文 / 对照 三态切换，切换时保持页码
+ * - 原文在翻译后改过（译文过期）：再加一个警告图标，点击重新翻译原文
  */
 export class ModeSwitcher {
 	private states = new Map<FileView, HeaderState>();
@@ -32,6 +34,7 @@ export class ModeSwitcher {
 	constructor(
 		private readonly app: App,
 		private readonly store: TranslationStore,
+		private readonly stale: StaleChecker,
 		private readonly onTranslate: (file: TFile) => void,
 		private readonly onRename: (file: TFile) => void,
 	) {}
@@ -106,6 +109,15 @@ export class ModeSwitcher {
 					els.push(el);
 				}
 			}
+			// 最后加：显示在最左边
+			const source = plan.staleSource;
+			if (source) {
+				const el = view.addAction("alert-triangle", "译文已过期：原文在翻译后有改动。点击重新翻译", () =>
+					this.onTranslate(source),
+				);
+				el.addClass("babel-reader-stale-button");
+				els.push(el);
+			}
 		}
 		this.states.set(view, { key, els });
 	}
@@ -120,6 +132,8 @@ export class ModeSwitcher {
 		/** 有可切换的译文时才有值 */
 		entry: TranslationEntry | null;
 		modes: ViewMode[];
+		/** 译文已过期时为原文文件（用于重新翻译） */
+		staleSource: TFile | null;
 	} | null {
 		if (file.extension.toLowerCase() !== "pdf") return null;
 		const resolved = this.store.resolve(file.path);
@@ -135,14 +149,19 @@ export class ModeSwitcher {
 			}
 		}
 		const translatable = current === "original";
+		let staleSource: TFile | null = null;
+		if (resolved && this.stale.check(resolved.entry) === "stale") {
+			staleSource = this.store.fileForMode(resolved.entry, "original");
+		}
 		const key = [
 			file.path,
 			current,
 			modes.join(","),
 			entry?.manifestPath ?? "",
 			entry?.manifest.createdAt ?? "",
+			staleSource ? "stale" : "",
 		].join("|");
-		return { key, current, translatable, entry, modes };
+		return { key, current, translatable, entry, modes, staleSource };
 	}
 
 	private async switchTo(view: FileView, entry: TranslationEntry, mode: ViewMode): Promise<void> {

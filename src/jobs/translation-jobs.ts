@@ -9,6 +9,7 @@ import { JobQueue, summaryText, type QueueItem } from "../core/queue";
 import { activeLlmProfile, buildJobOptions, type BabelReaderSettings } from "../core/settings-model";
 import { FEATURE_LLM_OPTIONS, type HealthInfo, type OutputKind } from "../core/types";
 import type { ServerLauncher } from "../launcher/server-launcher";
+import type { StaleChecker } from "../store/stale-checker";
 import type { TranslationStore } from "../store/translation-store";
 
 const POLL_INTERVAL_MS = 1000;
@@ -48,6 +49,7 @@ export class TranslationJobs {
 		private readonly client: ServerClient,
 		private readonly store: TranslationStore,
 		private readonly launcher: ServerLauncher,
+		private readonly stale: StaleChecker,
 		private readonly getSettings: () => BabelReaderSettings,
 		private readonly statusEl: HTMLElement,
 	) {
@@ -207,8 +209,10 @@ export class TranslationJobs {
 		const options = buildJobOptions(settings, {}, llm);
 
 		this.setDetail(item, "读取原文…");
+		const stamp = { mtime: file.stat.mtime, size: file.stat.size };
 		const data = await this.app.vault.readBinary(file);
 		const sha256 = await sha256Hex(data);
+		this.stale.remember(file, stamp, sha256);
 		check();
 
 		this.setDetail(item, "上传中…");

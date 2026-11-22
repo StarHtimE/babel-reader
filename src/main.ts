@@ -7,6 +7,7 @@ import { TranslationJobs } from "./jobs/translation-jobs";
 import { ServerLauncher } from "./launcher/server-launcher";
 import { TitleRenamer } from "./rename/title-renamer";
 import { BabelReaderSettingTab } from "./settings";
+import { StaleChecker } from "./store/stale-checker";
 import { TranslationStore } from "./store/translation-store";
 import { ModeSwitcher } from "./view/mode-switcher";
 import { OrphanPrompt } from "./view/orphan-prompt";
@@ -34,6 +35,8 @@ export default class BabelReaderPlugin extends Plugin {
 			() => this.settings.langOut,
 		);
 
+		const stale = new StaleChecker(this.app, this.store);
+
 		// 插件自己启动的服务：卸载插件或退出 Obsidian 时结束（onunload 在退出时不一定会被调用）
 		this.launcher = new ServerLauncher(this.client);
 		this.register(() => this.launcher.stop());
@@ -45,6 +48,7 @@ export default class BabelReaderPlugin extends Plugin {
 			this.client,
 			this.store,
 			this.launcher,
+			stale,
 			() => this.settings,
 			statusEl,
 		);
@@ -55,11 +59,13 @@ export default class BabelReaderPlugin extends Plugin {
 		this.switcher = new ModeSwitcher(
 			this.app,
 			this.store,
+			stale,
 			(file) => this.jobs.translate(file),
 			(file) => void this.renamer.run(file),
 		);
 		this.register(() => this.switcher.detachAll());
 		this.register(this.store.onChange(() => this.switcher.refreshAll()));
+		this.register(stale.onChange(() => this.switcher.refreshAll()));
 
 		this.addSettingTab(new BabelReaderSettingTab(this.app, this));
 		this.registerCommands();
@@ -68,7 +74,7 @@ export default class BabelReaderPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on("file-open", () => this.switcher.refreshAll()));
 
 		// 文件列表右键菜单：单个 PDF、文件夹、多选
-		const batch = new BatchActions(this.app, this.store, this.jobs, this.renamer, () => this.settings);
+		const batch = new BatchActions(this.app, this.store, stale, this.jobs, this.renamer, () => this.settings);
 		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => batch.addMenuItems(menu, [file])));
 		this.registerEvent(this.app.workspace.on("files-menu", (menu, files) => batch.addMenuItems(menu, files)));
 
@@ -77,12 +83,25 @@ export default class BabelReaderPlugin extends Plugin {
 		this.register(this.store.onSourceDeleted((entries) => orphans.add(entries)));
 
 		const vault = this.app.vault;
-		this.registerEvent(vault.on("delete", (file) => this.store.handleDelete(file)));
 		this.registerEvent(
-			vault.on("rename", (file, oldPath) => void this.store.handleRename(file, oldPath)),
+			vault.on("delete", (file) => {
+				stale.handleDelete(file);
+				this.store.handleDelete(file);
+			}),
+		);
+		this.registerEvent(
+			vault.on("rename", (file, oldPath) => {
+				stale.handleRename(file, oldPath);
+				void this.store.handleRename(file, oldPath);
+			}),
 		);
 		this.registerEvent(vault.on("create", (file) => void this.store.handleCreateOrModify(file)));
-		this.registerEvent(vault.on("modify", (file) => void this.store.handleCreateOrModify(file)));
+		this.registerEvent(
+			vault.on("modify", (file) => {
+				void this.store.handleCreateOrModify(file);
+				stale.handleModify(file);
+			}),
+		);
 
 		this.app.workspace.onLayoutReady(() => {
 			void this.store.rebuild();

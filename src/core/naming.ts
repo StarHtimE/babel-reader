@@ -32,12 +32,38 @@ export function pdfBasename(path: string): string {
 	return name.replace(/\.pdf$/i, "");
 }
 
-export function translationDirName(sourceBasename: string, id: string): string {
-	return `${sanitizeFileName(sourceBasename)}-${id}`;
+/**
+ * 译文目录名和译文文件名里，原文文件名部分的长度上限。
+ * 原文名在译文路径里出现两次（目录名和文件名）：不加限制时长标题会让完整路径超过
+ * Windows 的 260 字符上限（MAX_PATH），Obsidian 的 PDF 视图就打不开（显示空白、0/0 页）。
+ */
+export const TRANSLATION_BASE_MAX = 60;
+
+/** 超长时截断：优先在空格、下划线、连字符处断开，去掉结尾的标点 */
+export function shortenName(name: string, maxLength: number): string {
+	if (name.length <= maxLength) return name;
+	const cut = name.slice(0, maxLength);
+	const breakAt = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf("_"), cut.lastIndexOf("-"));
+	const s = breakAt >= maxLength * 0.6 ? cut.slice(0, breakAt) : cut;
+	return s.replace(/[\s,;._\-–—(]+$/u, "") || cut;
 }
 
-export function outputFileName(sourceBasename: string, langOut: string, kind: OutputKind): string {
-	return `${sanitizeFileName(sourceBasename)}.${sanitizeFileName(langOut)}.${kind}.pdf`;
+/** 译文名里用的原文名：清理非法字符并限制长度；maxLength 传 Infinity 得到旧版（不限长）的名字 */
+function translationBase(sourceBasename: string, maxLength: number): string {
+	return shortenName(sanitizeFileName(sourceBasename), maxLength);
+}
+
+export function translationDirName(sourceBasename: string, id: string, maxLength = TRANSLATION_BASE_MAX): string {
+	return `${translationBase(sourceBasename, maxLength)}-${id}`;
+}
+
+export function outputFileName(
+	sourceBasename: string,
+	langOut: string,
+	kind: OutputKind,
+	maxLength = TRANSLATION_BASE_MAX,
+): string {
+	return `${translationBase(sourceBasename, maxLength)}.${sanitizeFileName(langOut)}.${kind}.pdf`;
 }
 
 /** 用 "/" 拼接仓库内路径，去掉多余的斜杠；结果不以斜杠开头或结尾 */

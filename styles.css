@@ -87,3 +87,8 @@
 .babel-reader-queue-item.is-cancelled .setting-item-name {
 	color: var(--text-muted);
 }
+
+/* 译文过期提示 */
+.view-action.babel-reader-stale-button {
+	color: var(--text-warning);
+}

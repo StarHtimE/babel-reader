@@ -1,8 +1,9 @@
 import { Notice, TFile, TFolder, type App, type Menu, type TAbstractFile } from "obsidian";
 import { langOutOf, type BabelReaderSettings } from "../core/settings-model";
 import type { TitleRenamer } from "../rename/title-renamer";
+import type { StaleChecker } from "../store/stale-checker";
 import type { TranslationStore } from "../store/translation-store";
-import { BatchTranslateModal } from "../view/batch-translate-modal";
+import { BatchTranslateModal, type BatchTranslatePlan } from "../view/batch-translate-modal";
 import type { TranslationJobs } from "./translation-jobs";
 
 /** 文件列表右键菜单里的翻译 / 重命名：单个 PDF、文件夹、多选 */
@@ -10,6 +11,7 @@ export class BatchActions {
 	constructor(
 		private readonly app: App,
 		private readonly store: TranslationStore,
+		private readonly stale: StaleChecker,
 		private readonly jobs: TranslationJobs,
 		private readonly renamer: TitleRenamer,
 		private readonly getSettings: () => BabelReaderSettings,
@@ -36,7 +38,7 @@ export class BatchActions {
 			item
 				.setTitle(translateTitle)
 				.setIcon("languages")
-				.onClick(() => this.translate(targets)),
+				.onClick(() => void this.translate(targets)),
 		);
 		menu.addItem((item) =>
 			item
@@ -47,7 +49,7 @@ export class BatchActions {
 	}
 
 	/** 翻译单个 PDF 时直接加入队列；文件夹或多选时先弹窗确认 */
-	translate(targets: readonly TAbstractFile[]): void {
+	async translate(targets: readonly TAbstractFile[]): Promise<void> {
 		const pdfs = this.store.collectSourcePdfs(targets);
 		const only = targets.length === 1 ? targets[0] : undefined;
 		if (only instanceof TFile && pdfs[0] === only) {
@@ -59,11 +61,24 @@ export class BatchActions {
 			return;
 		}
 		const langOut = langOutOf(this.getSettings());
-		const plan = { fresh: [] as TFile[], translated: [] as TFile[], queued: [] as TFile[], langOut };
+		const plan: BatchTranslatePlan = { fresh: [], stale: [], translated: [], queued: [], langOut };
+		const translated: TFile[] = [];
 		for (const f of pdfs) {
 			if (this.jobs.isQueued(f)) plan.queued.push(f);
-			else if (this.store.hasTranslation(f.path, langOut)) plan.translated.push(f);
+			else if (this.store.hasTranslation(f.path, langOut)) translated.push(f);
 			else plan.fresh.push(f);
+		}
+		// 已有译文的：检查原文在翻译后有没有改过（要读文件算哈希，篇数多时显示进度）
+		const notice = translated.length > 3 ? new Notice("", 0) : null;
+		try {
+			for (const [i, f] of translated.entries()) {
+				notice?.setMessage(`检查译文是否过期 ${i + 1}/${translated.length}…`);
+				const entry = this.store.index.forSource(f.path, langOut);
+				const state = entry ? await this.stale.freshnessOf(entry) : "unknown";
+				(state === "stale" ? plan.stale : plan.translated).push(f);
+			}
+		} finally {
+			notice?.hide();
 		}
 		new BatchTranslateModal(this.app, plan, (files) => {
 			const n = this.jobs.enqueue(files);

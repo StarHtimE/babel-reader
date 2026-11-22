@@ -3,7 +3,9 @@ import { Modal, Setting, type App, type ButtonComponent, type TFile } from "obsi
 export interface BatchTranslatePlan {
 	/** 还没有译文的 */
 	fresh: TFile[];
-	/** 已有当前目标语言译文的 */
+	/** 已有译文、但原文在翻译后改过的（默认重新翻译） */
+	stale: TFile[];
+	/** 已有当前目标语言译文、且没有过期的（默认跳过） */
 	translated: TFile[];
 	/** 已在翻译队列里的（不会重复加入） */
 	queued: TFile[];
@@ -27,25 +29,27 @@ export class BatchTranslateModal extends Modal {
 	}
 
 	onOpen(): void {
-		const { fresh, translated, queued, langOut } = this.plan;
-		const total = fresh.length + translated.length + queued.length;
+		const { fresh, stale, translated, queued, langOut } = this.plan;
+		const total = fresh.length + stale.length + translated.length + queued.length;
 		this.setTitle("批量翻译");
 		const el = this.contentEl;
 		el.createEl("p", { text: `找到 ${total} 篇 PDF，目标语言 ${langOut}：` });
 		const ul = el.createEl("ul");
 		ul.createEl("li", { text: `还没有译文：${fresh.length} 篇` });
+		if (stale.length > 0) ul.createEl("li", { text: `译文已过期（原文改过）：${stale.length} 篇（默认重新翻译）` });
 		if (translated.length > 0) ul.createEl("li", { text: `已有译文：${translated.length} 篇（默认跳过）` });
 		if (queued.length > 0) ul.createEl("li", { text: `已在翻译队列里：${queued.length} 篇（不会重复加入）` });
 
-		if (fresh.length > 0) {
-			const names = fresh.slice(0, PREVIEW_LIMIT).map((f) => f.basename);
-			const more = fresh.length > PREVIEW_LIMIT ? ` 等 ${fresh.length} 篇` : "";
+		const willTranslate = [...fresh, ...stale];
+		if (willTranslate.length > 0) {
+			const names = willTranslate.slice(0, PREVIEW_LIMIT).map((f) => f.basename);
+			const more = willTranslate.length > PREVIEW_LIMIT ? ` 等 ${willTranslate.length} 篇` : "";
 			el.createEl("p", { cls: "setting-item-description", text: `将翻译：${names.join("、")}${more}` });
 		}
 
 		if (translated.length > 0) {
 			new Setting(el)
-				.setName("已有译文的也重新翻译")
+				.setName("没过期的也重新翻译")
 				.setDesc("会覆盖原来的译文。参数没变时会复用服务端的翻译缓存")
 				.addToggle((t) =>
 					t.setValue(false).onChange((v) => {
@@ -74,7 +78,8 @@ export class BatchTranslateModal extends Modal {
 	}
 
 	private files(): TFile[] {
-		return this.includeTranslated ? [...this.plan.fresh, ...this.plan.translated] : this.plan.fresh;
+		const base = [...this.plan.fresh, ...this.plan.stale];
+		return this.includeTranslated ? [...base, ...this.plan.translated] : base;
 	}
 
 	private refresh(): void {
